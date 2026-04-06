@@ -1,17 +1,12 @@
 import React from 'react';
 import { Search, Bell, AlertCircle, ChevronDown } from 'lucide-react';
 
-const Header = ({ activeTab, setActiveTab, activeModule }) => {
-  const tabs = ['Overview', 'Detail', 'Summary'];
-  const activeIndex = tabs.indexOf(activeTab);
-
-  // 👇 กำหนดชื่อหัวข้อของ Header ตาม Module
-  let headerTitle = '';
-  if (activeModule === 'home') headerTitle = 'Welcome to System';
-  else if (activeModule === 'upload') headerTitle = 'Part List Upload';
-  else if (activeModule === 'result') headerTitle = 'Inventory Result';
+const Header = ({ activeTab, setActiveTab, activeModule, uploadTab, setUploadTab }) => {
+  const dashboardTabs = ['Overview', 'Detail', 'Summary'];
+  const uploadTabs = ['TBOS', 'Handheld'];
 
   return (
+    // Header พื้นหลังสีขาว/สว่าง และตัวหนังสือสีเข้ม
     <div className="fixed top-0 left-0 right-0 z-50 bg-[#F5F6F8]/90 backdrop-blur-md w-full flex justify-between items-center px-8 py-4 border-b border-gray-200">
       
       {/* Left: Logo */}
@@ -22,16 +17,18 @@ const Header = ({ activeTab, setActiveTab, activeModule }) => {
         <span className="text-xl font-bold text-dark tracking-tight ml-2">WISA </span>
       </div>
 
-      {/* Center: Tabs or Title */}
+      {/* Center: Dynamic Tabs or Title */}
       <div className="absolute left-1/2 -translate-x-1/2">
         {activeModule === 'dashboard' ? (
+          
+          // โชว์ Tabs สำหรับ Dashboard
           <div className="relative flex items-center bg-white rounded-full p-1.5 shadow-sm border border-gray-100">
             <div 
               className="absolute top-1.5 bottom-1.5 left-1.5 w-[110px] bg-dark rounded-full transition-transform duration-300 ease-in-out shadow-md"
-              style={{ transform: `translateX(${activeIndex * 100}%)` }}
+              style={{ transform: `translateX(${dashboardTabs.indexOf(activeTab) * 100}%)` }}
             ></div>
             
-            {tabs.map((tab) => (
+            {dashboardTabs.map((tab) => (
               <button 
                 key={tab}
                 onClick={() => setActiveTab(tab)}
@@ -43,11 +40,37 @@ const Header = ({ activeTab, setActiveTab, activeModule }) => {
               </button>
             ))}
           </div>
-        ) : (
-          // 👇 โชว์ชื่อหัวข้อตามตัวแปร headerTitle แทนคำว่า Generation System เดิม
-          <div className="text-sm font-bold text-dark uppercase tracking-widest bg-white px-8 py-2.5 rounded-full shadow-sm border border-gray-100">
-             {headerTitle}
+
+        ) : activeModule === 'upload' ? (
+          
+          // โชว์ Tabs สำหรับ Part List Upload (TBOS / Handheld)
+          <div className="relative flex items-center bg-white rounded-full p-1.5 shadow-sm border border-gray-100">
+            <div 
+              className="absolute top-1.5 bottom-1.5 left-1.5 w-[120px] bg-dark rounded-full transition-transform duration-300 ease-in-out shadow-md"
+              style={{ transform: `translateX(${uploadTabs.indexOf(uploadTab) * 100}%)` }}
+            ></div>
+            
+            {uploadTabs.map((tab) => (
+              <button 
+                key={tab}
+                onClick={() => setUploadTab(tab)}
+                className={`relative z-10 w-[120px] flex-none text-center py-2.5 text-xs font-bold transition-colors duration-300 ${
+                  uploadTab === tab ? 'text-white' : 'text-gray-400 hover:text-dark'
+                }`}
+              >
+                {tab}
+              </button>
+            ))}
           </div>
+
+        ) : (
+          
+          // หน้าอื่นๆ โชว์เป็นแค่ป้ายชื่อ
+          <div className="text-sm font-bold text-dark uppercase tracking-widest bg-white px-8 py-2.5 rounded-full shadow-sm border border-gray-100">
+             {activeModule === 'home' ? 'Welcome to System' : 
+              activeModule === 'result' ? 'Inventory Result' : 'System'}
+          </div>
+
         )}
       </div>
 

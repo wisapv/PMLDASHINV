@@ -4,30 +4,34 @@ import Header from './components/Header';
 import Overview from './pages/Overview';
 import Detail from './pages/Detail';
 import ListCreate from './pages/ListCreate';
-import Home from './pages/Home'; // 👇 เพิ่มการ import หน้า Home
+import Home from './pages/Home';
 
 function App() {
-  const [activeTab, setActiveTab] = useState('Overview');
-  const [activeModule, setActiveModule] = useState('home'); // 👇 ตั้งค่าเริ่มต้นเป็นหน้า home
+  const [activeModule, setActiveModule] = useState('home');
+  const [activeTab, setActiveTab] = useState('Overview'); // ใช้สำหรับหน้า Dashboard
+  const [uploadTab, setUploadTab] = useState('TBOS');     // ใช้สำหรับหน้า Upload (เพิ่มใหม่)
 
   return (
     <div className="min-h-screen bg-[#F5F6F8] font-sans text-dark overflow-x-hidden overflow-y-scroll">
       
       <Sidebar activeModule={activeModule} setActiveModule={setActiveModule} />
       
+      {/* ส่งค่า State ไปให้ Header จัดการแสดงผล Tabs */}
       <Header 
         activeTab={activeTab} 
         setActiveTab={setActiveTab} 
-        activeModule={activeModule} 
+        activeModule={activeModule}
+        uploadTab={uploadTab}
+        setUploadTab={setUploadTab}
       />
 
       <div className="flex pt-[96px]">
         <div className="flex-1 ml-[110px] py-6 pr-8 flex flex-col gap-6 min-w-0">
           
-          {/* 👇 จัดการการเปลี่ยนหน้าตาม Module ที่เลือกจาก Sidebar */}
           {activeModule === 'home' && <Home />}
           
-          {activeModule === 'upload' && <ListCreate />}
+          {/* ส่ง uploadTab ไปให้ ListCreate เพื่อเลือกว่าจะโชว์ TBOS หรือ Handheld */}
+          {activeModule === 'upload' && <ListCreate activeTab={uploadTab} />}
           
           {activeModule === 'dashboard' && (
             <>
