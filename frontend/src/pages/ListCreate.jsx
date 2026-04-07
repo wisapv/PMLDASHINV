@@ -1,76 +1,139 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { 
-  CheckCircle2, 
-  FileSpreadsheet, 
-  Database, 
-  Loader2, 
-  Download, 
-  ChevronDown,
-  X,
-  CheckSquare, // นำกลับมาใช้สำหรับ Modal
-  Square       // นำกลับมาใช้สำหรับ Modal
+  CheckCircle2, FileSpreadsheet, Database, Loader2, Download, 
+  ChevronDown, X, CheckSquare, Square, Merge 
 } from 'lucide-react';
 
 const ListCreate = ({ activeTab }) => {
-  // --- States ---
-  useEffect(() => {
-    if (activeTab === 'TBOS') setStep('idle');
+  // รีเซ็ตหน้าจอเมื่อเปลี่ยน Tab (TBOS / Handheld)
+  useEffect(() => { 
+    if (activeTab === 'TBOS') {
+      setStep('idle');
+      setUploadStatus({ target: false, proc: false });
+    }
   }, [activeTab]);
 
-  const [step, setStep] = useState('idle'); 
-  const [selectedFilter, setSelectedFilter] = useState('Line 1');
+  // --- States ---
+  const [step, setStep] = useState('idle'); // idle, generating, preview
+  const [uploadStatus, setUploadStatus] = useState({ target: false, proc: false });
+  const [previewData, setPreviewData] = useState([]);
   
-  // State สำหรับ Popup
+  // States สำหรับ Modal Download
   const [isModalOpen, setIsModalOpen] = useState(false);
-  
-  // State จำลองรายชื่อไฟล์ที่จะให้เลือกดาวน์โหลด (อนาคตดึงจาก Backend)
   const [downloadFiles, setDownloadFiles] = useState([
-    { id: 'f1', label: 'Part List Data (CSV)', isChecked: true },
-    { id: 'f2', label: 'Master Address (Excel)', isChecked: false },
-    { id: 'f3', label: 'Summary Report (PDF)', isChecked: false },
+    { id: 'f1', label: 'Main Part List Format (Excel)', isChecked: true },
+    { id: 'f2', label: 'Master Address (Excel)', isChecked: false } // เผื่ออนาคต
   ]);
 
-  const [previewData] = useState([
-    { partNo: '56101-0K010', kbn: 'SFK6', address: 'FN3-L01', qty: 16, status: 'Valid' },
-    { partNo: '82121-0K120', kbn: 'NDH2', address: 'W-10-02', qty: 1, status: 'Valid' },
-  ]);
+  // Refs สำหรับซ่อน Input รับไฟล์
+  const fileInputRef1 = useRef(null);
+  const fileInputRef2 = useRef(null);
 
   // --- Handlers ---
-  const handleUploadMock = () => {
-    if (step === 'generating' || step === 'preview') return;
-    setStep('uploaded');
+
+  // 1. อัพโหลดไฟล์ Target R/O
+  const handleFileChangeBox1 = async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    const formData = new FormData();
+    formData.append('file', file);
+    
+    try {
+      setStep('generating');
+      const response = await fetch('http://localhost:3000/api/part-list/target-ro', { 
+        method: 'POST', 
+        body: formData 
+      });
+      if (response.ok) {
+        setUploadStatus(prev => ({ ...prev, target: true }));
+        setStep('idle'); 
+      } else {
+        alert("Upload Target R/O Failed!");
+        setStep('idle');
+      }
+    } catch (err) { 
+      alert("Server Error! (ตรวจสอบว่ารัน node server.js หรือยัง)"); 
+      setStep('idle'); 
+    }
+    e.target.value = null; // เคลียร์ค่า
   };
 
-  const handleGenerate = () => {
-    setStep('generating');
-    setTimeout(() => {
-      setStep('preview');
-    }, 2000);
+  // 2. อัพโหลดไฟล์ Part Procurement
+  const handleFileChangeBox2 = async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    const formData = new FormData();
+    formData.append('file', file);
+    
+    try {
+      setStep('generating');
+      const response = await fetch('http://localhost:3000/api/part-list/part-procurement', { 
+        method: 'POST', 
+        body: formData 
+      });
+      if (response.ok) {
+        setUploadStatus(prev => ({ ...prev, proc: true }));
+        setStep('idle'); 
+      } else {
+        alert("Upload Part Procurement Failed!");
+        setStep('idle');
+      }
+    } catch (err) { 
+      alert("Server Error! (ตรวจสอบว่ารัน node server.js หรือยัง)"); 
+      setStep('idle'); 
+    }
+    e.target.value = null; // เคลียร์ค่า
   };
 
-  // Handler สำหรับติ๊กเลือกไฟล์แต่ละอัน
+  // 3. กดปุ่ม Merge ดึงข้อมูลที่ Join แล้วมาแสดง Preview
+  const handleMergeData = async () => {
+    try {
+      setStep('generating');
+      const response = await fetch('http://localhost:3000/api/part-list/merge');
+      const result = await response.json();
+      
+      if (response.ok) {
+        setPreviewData(result.data);
+        setStep('preview');
+      } else {
+        alert("Merge Failed!");
+        setStep('idle');
+      }
+    } catch (error) {
+      alert("Server Error during merge!");
+      setStep('idle');
+    }
+  };
+
+  // --- Modal Handlers ---
   const handleToggleFile = (id) => {
     setDownloadFiles(prev => prev.map(f => f.id === id ? { ...f, isChecked: !f.isChecked } : f));
   };
-
-  // เช็คว่าตอนนี้เลือกครบทุกไฟล์หรือยัง
+  
   const isAllChecked = downloadFiles.every(f => f.isChecked);
-
-  // Handler สำหรับปุ่ม Select All / Deselect All
+  
   const handleToggleAll = () => {
-    const newState = !isAllChecked; // ถ้าเลือกครบแล้วให้เป็น false, ถ้ายังไม่ครบให้เป็น true
+    const newState = !isAllChecked;
     setDownloadFiles(prev => prev.map(f => ({ ...f, isChecked: newState })));
   };
 
-  const handleConfirmDownload = () => {
-    const selectedFiles = downloadFiles.filter(f => f.isChecked).map(f => f.label);
-    if (selectedFiles.length === 0) {
-      alert("Please select at least one file to download.");
-      return;
+  // 4. กดปุ่มยืนยันดาวน์โหลด
+  const handleConfirmDownload = async () => {
+    // เช็คว่าผู้ใช้ติ๊กเลือก Main Part List หรือเปล่า
+    const isMainSelected = downloadFiles.some(f => f.id === 'f1' && f.isChecked);
+    
+    if (isMainSelected) {
+      // สั่งให้ Browser ดาวน์โหลดไฟล์จาก Backend
+      window.location.href = 'http://localhost:3000/api/part-list/download-main';
+    } else {
+      alert("Please select 'Main Part List Format' to download.");
     }
-    alert(`Downloading:\n- ${selectedFiles.join('\n- ')}`);
-    setIsModalOpen(false); // โหลดเสร็จก็ปิด popup
+    
+    setIsModalOpen(false);
   };
+
+  // เตรียม Header ตาราง (ดึงคอลัมน์แรกๆ มาโชว์ 6 คอลัมน์)
+  const tableHeaders = previewData.length > 0 ? Object.keys(previewData[0]).slice(0, 6) : [];
 
   return (
     <div className="flex flex-col gap-6 w-full animate-in fade-in duration-500 pb-10">
@@ -78,134 +141,133 @@ const ListCreate = ({ activeTab }) => {
       {activeTab === 'TBOS' ? (
         <div className="flex flex-col gap-8">
           
+          {/* Header Texts */}
           <div className="flex flex-col">
             <h2 className="text-2xl font-bold text-dark tracking-tight">Generate Part List (TBOS)</h2>
-            <p className="text-sm text-gray-500">Please upload both Part List and Master data files to generate.</p>
+            <p className="text-sm text-gray-500">Upload Target R/O and Procurement to Merge Data.</p>
           </div>
 
           {/* ================= UPLOAD SECTION ================= */}
-          <div className="flex flex-col items-center gap-8">
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 w-full">
-              {/* Box 1 */}
-              <div 
-                onClick={handleUploadMock} 
-                className={`bg-white border-2 border-dashed rounded-[32px] p-10 flex flex-col items-center justify-center gap-3 transition-all ${step === 'generating' || step === 'preview' ? 'border-gray-200 opacity-70 cursor-not-allowed' : 'border-gray-200 hover:border-primary cursor-pointer group'}`}
-              >
-                <div className={`w-14 h-14 rounded-full flex items-center justify-center transition-transform ${step === 'generating' || step === 'preview' ? 'bg-gray-50 text-gray-400' : 'bg-orange-50 text-primary group-hover:scale-110'}`}>
-                  <FileSpreadsheet size={28} />
+          {(step === 'idle' || step === 'generating') && (
+            <div className="flex flex-col items-center gap-8">
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 w-full">
+                
+                {/* Box 1: Target R/O */}
+                <div 
+                  onClick={() => fileInputRef1.current.click()} 
+                  className={`bg-white border-2 border-dashed rounded-[32px] p-10 flex flex-col items-center justify-center gap-3 cursor-pointer transition-all ${uploadStatus.target ? 'border-success bg-green-50/30' : 'hover:border-primary'}`}
+                >
+                  <div className={`w-14 h-14 rounded-full flex items-center justify-center ${uploadStatus.target ? 'bg-success text-white shadow-md shadow-success/30' : 'bg-orange-50 text-primary'}`}>
+                    {uploadStatus.target ? <CheckCircle2 size={28} /> : <FileSpreadsheet size={28} />}
+                  </div>
+                  <div className="text-center">
+                    <h3 className={`font-bold ${uploadStatus.target ? 'text-success' : 'text-dark'}`}>1. Target R/O</h3>
+                    <p className="text-[10px] text-gray-400">{uploadStatus.target ? 'Saved to Database' : 'Click to upload Excel'}</p>
+                  </div>
                 </div>
-                <div className="text-center">
-                  <h3 className="font-bold text-dark">1. Upload Part List</h3>
-                  <p className="text-[10px] text-gray-400">
-                    {step === 'generating' || step === 'preview' ? 'Uploaded successfully' : 'Click to mock upload'}
-                  </p>
+                <input type="file" accept=".xls,.xlsx" ref={fileInputRef1} onChange={handleFileChangeBox1} className="hidden" />
+
+                {/* Box 2: Part Procurement */}
+                <div 
+                  onClick={() => fileInputRef2.current.click()} 
+                  className={`bg-white border-2 border-dashed rounded-[32px] p-10 flex flex-col items-center justify-center gap-3 cursor-pointer transition-all ${uploadStatus.proc ? 'border-success bg-green-50/30' : 'hover:border-primary'}`}
+                >
+                  <div className={`w-14 h-14 rounded-full flex items-center justify-center ${uploadStatus.proc ? 'bg-success text-white shadow-md shadow-success/30' : 'bg-orange-50 text-primary'}`}>
+                    {uploadStatus.proc ? <CheckCircle2 size={28} /> : <Database size={28} />}
+                  </div>
+                  <div className="text-center">
+                    <h3 className={`font-bold ${uploadStatus.proc ? 'text-success' : 'text-dark'}`}>2. Part Procurement</h3>
+                    <p className="text-[10px] text-gray-400">{uploadStatus.proc ? 'Saved to Database' : 'Click to upload Excel'}</p>
+                  </div>
                 </div>
+                <input type="file" accept=".xls,.xlsx" ref={fileInputRef2} onChange={handleFileChangeBox2} className="hidden" />
               </div>
 
-              {/* Box 2 */}
-              <div 
-                onClick={handleUploadMock} 
-                className={`bg-white border-2 border-dashed rounded-[32px] p-10 flex flex-col items-center justify-center gap-3 transition-all ${step === 'generating' || step === 'preview' ? 'border-gray-200 opacity-70 cursor-not-allowed' : 'border-gray-200 hover:border-primary cursor-pointer group'}`}
-              >
-                <div className={`w-14 h-14 rounded-full flex items-center justify-center transition-transform ${step === 'generating' || step === 'preview' ? 'bg-gray-50 text-gray-400' : 'bg-orange-50 text-primary group-hover:scale-110'}`}>
-                  <Database size={28} />
+              {/* ปุ่ม Merge จะโผล่มาเมื่ออัพโหลดครบ 2 ไฟล์ */}
+              {uploadStatus.target && uploadStatus.proc && step !== 'generating' && (
+                <button 
+                  onClick={handleMergeData} 
+                  className="bg-dark text-white px-10 py-4 rounded-full font-bold shadow-xl shadow-dark/20 hover:bg-primary transition-all flex items-center gap-2 animate-in zoom-in"
+                >
+                  <Merge size={20} /> Merge & Generate Preview
+                </button>
+              )}
+              
+              {step === 'generating' && (
+                <div className="flex flex-col items-center gap-2 text-primary mt-4 animate-in fade-in">
+                  <Loader2 size={32} className="animate-spin" />
+                  <p className="font-bold text-sm">Processing Data...</p>
                 </div>
-                <div className="text-center">
-                  <h3 className="font-bold text-dark">2. Upload Master Data</h3>
-                  <p className="text-[10px] text-gray-400">
-                    {step === 'generating' || step === 'preview' ? 'Uploaded successfully' : 'Click to mock upload'}
-                  </p>
-                </div>
-              </div>
-            </div>
-
-            {step === 'uploaded' && (
-              <button 
-                onClick={handleGenerate}
-                className="bg-primary text-white px-10 py-4 rounded-full font-bold shadow-lg shadow-primary/20 hover:scale-105 transition-transform flex items-center gap-2 animate-in fade-in zoom-in"
-              >
-                Generate Part List for TBOS
-              </button>
-            )}
-          </div>
-
-          {/* ================= LOADING SECTION ================= */}
-          {step === 'generating' && (
-            <div className="bg-white rounded-[32px] border border-gray-100 p-16 flex flex-col items-center justify-center gap-4 shadow-sm animate-in fade-in slide-in-from-top-4">
-              <Loader2 size={48} className="text-primary animate-spin" />
-              <h3 className="text-xl font-bold text-dark mt-4">Generating Data...</h3>
-              <p className="text-gray-500 text-sm">Please wait while we are processing your files.</p>
+              )}
             </div>
           )}
 
           {/* ================= PREVIEW SECTION ================= */}
           {step === 'preview' && (
-            <div className="bg-white rounded-[24px] shadow-sm border border-gray-100 overflow-hidden animate-in fade-in slide-in-from-top-4">
+            <div className="bg-white rounded-[24px] shadow-sm border border-gray-100 overflow-hidden animate-in fade-in slide-in-from-bottom-4">
               
               <div className="px-6 py-4 border-b border-gray-100 flex justify-between items-center bg-gray-50/50">
-                <h3 className="font-bold text-dark">Data Validation Preview</h3>
-                <div className="relative">
-                  <select 
-                    value={selectedFilter}
-                    onChange={(e) => setSelectedFilter(e.target.value)}
-                    className="appearance-none bg-white border border-gray-200 text-dark text-sm font-bold rounded-xl px-4 py-2 pr-10 outline-none focus:border-primary shadow-sm cursor-pointer"
-                  >
-                    <option value="Line 1">Assembly Line 1</option>
-                    <option value="Line 2">Assembly Line 2</option>
-                    <option value="All">All Lines</option>
-                  </select>
-                  <ChevronDown size={16} className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none" />
-                </div>
+                <h3 className="font-bold text-dark">Merged Data Preview ({previewData.length} matches)</h3>
+                <button 
+                  onClick={() => { 
+                    setStep('idle'); 
+                    setUploadStatus({target:false, proc:false}); 
+                    setPreviewData([]);
+                  }} 
+                  className="text-xs bg-gray-200 px-4 py-2 rounded-full font-bold text-dark hover:bg-gray-300 transition-colors"
+                >
+                  Reset & Upload New
+                </button>
               </div>
 
-              <table className="w-full text-left text-xs whitespace-nowrap">
-                <thead className="bg-white border-b border-gray-100">
-                  <tr className="text-gray-400 uppercase tracking-tighter">
-                    <th className="px-6 py-4 font-bold">Part Number</th>
-                    <th className="px-6 py-4 font-bold">Address</th>
-                    <th className="px-6 py-4 text-center">Status</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-gray-50">
-                  {previewData.map((row, idx) => (
-                    <tr key={idx} className="hover:bg-gray-50/50 transition-colors">
-                      <td className="px-6 py-4 font-bold text-dark">{row.partNo}</td>
-                      <td className="px-6 py-4 text-gray-500 font-medium">{row.address}</td>
-                      <td className="px-6 py-4 text-center">
-                        <span className="bg-green-50 text-success px-2 py-1 rounded text-[10px] font-bold inline-flex items-center gap-1">
-                          <CheckCircle2 size={10}/> {row.status}
-                        </span>
-                      </td>
+              <div className="overflow-x-auto max-h-[400px]">
+                <table className="w-full text-left text-xs whitespace-nowrap relative">
+                  <thead className="bg-white border-b border-gray-100 sticky top-0 z-10 shadow-sm">
+                    <tr className="text-gray-400 uppercase tracking-tighter">
+                      {tableHeaders.map((header, idx) => (
+                        <th key={idx} className="px-6 py-4 font-bold">{header}</th>
+                      ))}
                     </tr>
-                  ))}
-                </tbody>
-              </table>
+                  </thead>
+                  <tbody className="divide-y divide-gray-50">
+                    {previewData.slice(0, 50).map((row, idx) => (
+                      <tr key={idx} className="hover:bg-gray-50/50 transition-colors">
+                        {tableHeaders.map((header, hIdx) => (
+                          <td key={hIdx} className="px-6 py-4 font-medium text-dark">{String(row[header] || '')}</td>
+                        ))}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+                {previewData.length > 50 && (
+                  <div className="text-center py-3 text-xs text-gray-400 bg-gray-50/30">
+                    Showing first 50 records...
+                  </div>
+                )}
+              </div>
 
-              <div className="p-6 bg-gray-50/80 flex justify-end items-center border-t border-gray-100">
+              <div className="p-6 bg-gray-50/80 flex justify-end border-t border-gray-100">
                 <button 
                   onClick={() => setIsModalOpen(true)} 
                   className="bg-dark text-white px-8 py-3 rounded-xl font-bold shadow-md hover:bg-black transition-colors flex items-center gap-2"
                 >
-                  <Download size={18} /> Download
+                  <Download size={18} /> Download Selection
                 </button>
               </div>
-
             </div>
           )}
         </div>
       ) : (
 
         /* ================= CONTENT: Handheld ================= */
-        <div className="bg-white border-2 border-dashed border-gray-200 rounded-[32px] p-20 flex flex-col items-center justify-center text-gray-400 animate-in fade-in">
-          <h3 className="text-xl font-bold text-dark mb-2">Handheld Generator</h3>
-          <p>This section is under development for Handheld support.</p>
+        <div className="bg-white border-2 border-dashed border-gray-200 rounded-[32px] p-20 flex items-center justify-center text-gray-400 animate-in fade-in">
+          <p>Handheld Generator (Coming Soon...)</p>
         </div>
       )}
 
-      {/* ================= DOWNLOAD POPUP MODAL (CHECKBOX LIST) ================= */}
+      {/* ================= DOWNLOAD POPUP MODAL ================= */}
       {isModalOpen && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/40 backdrop-blur-sm animate-in fade-in">
-          
           <div className="bg-white rounded-[24px] p-8 w-[400px] shadow-2xl animate-in zoom-in-95 relative">
             
             <button 
@@ -221,22 +283,16 @@ const ListCreate = ({ activeTab }) => {
             {/* Checkbox List Area */}
             <div className="flex flex-col gap-2 mb-8">
               
-              {/* Select All Option */}
               <div 
                 onClick={handleToggleAll}
                 className="flex items-center gap-3 p-3 rounded-xl border-2 border-gray-100 hover:border-primary/50 hover:bg-orange-50/50 cursor-pointer transition-all group"
               >
-                {isAllChecked ? (
-                  <CheckSquare size={20} className="text-primary" />
-                ) : (
-                  <Square size={20} className="text-gray-300 group-hover:text-primary/50" />
-                )}
+                {isAllChecked ? <CheckSquare size={20} className="text-primary" /> : <Square size={20} className="text-gray-300 group-hover:text-primary/50" />}
                 <span className="font-bold text-dark select-none">Select All Files</span>
               </div>
 
               <div className="w-full h-px bg-gray-100 my-2"></div>
 
-              {/* Individual Files Options */}
               <div className="flex flex-col gap-1 max-h-[150px] overflow-y-auto pr-2">
                 {downloadFiles.map((file) => (
                   <div 
@@ -244,11 +300,7 @@ const ListCreate = ({ activeTab }) => {
                     onClick={() => handleToggleFile(file.id)}
                     className="flex items-center gap-3 p-2.5 rounded-lg hover:bg-gray-50 cursor-pointer transition-colors group"
                   >
-                    {file.isChecked ? (
-                      <CheckSquare size={18} className="text-primary" />
-                    ) : (
-                      <Square size={18} className="text-gray-300 group-hover:text-primary/50" />
-                    )}
+                    {file.isChecked ? <CheckSquare size={18} className="text-primary" /> : <Square size={18} className="text-gray-300 group-hover:text-primary/50" />}
                     <span className={`text-sm font-medium select-none ${file.isChecked ? 'text-dark' : 'text-gray-500'}`}>
                       {file.label}
                     </span>
@@ -281,7 +333,6 @@ const ListCreate = ({ activeTab }) => {
           </div>
         </div>
       )}
-
     </div>
   );
 };

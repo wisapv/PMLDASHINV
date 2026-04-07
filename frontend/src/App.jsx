@@ -5,6 +5,7 @@ import Overview from './pages/Overview';
 import Detail from './pages/Detail';
 import ListCreate from './pages/ListCreate';
 import Home from './pages/Home';
+import TemplateManager from './pages/TemplateManager'
 
 function App() {
   const [activeModule, setActiveModule] = useState('home');
@@ -32,7 +33,7 @@ function App() {
           
           {/* ส่ง uploadTab ไปให้ ListCreate เพื่อเลือกว่าจะโชว์ TBOS หรือ Handheld */}
           {activeModule === 'upload' && <ListCreate activeTab={uploadTab} />}
-          
+          {activeModule === 'template' && <TemplateManager />}
           {activeModule === 'dashboard' && (
             <>
               {activeTab === 'Overview' && <Overview />}

@@ -56,7 +56,13 @@ const Sidebar = ({ activeModule, setActiveModule }) => {
       {/* Bottom Menu */}
       <div className="flex flex-col gap-6 mt-auto">
         {/* 5. File download */}
-        <div title="File Download" className="p-3 text-gray-400 hover:text-dark cursor-pointer transition-colors">
+        <div 
+          onClick={() => setActiveModule('template')} // <-- สั่งให้เปลี่ยนหน้า
+          title="Template Management" 
+          className={`p-3 rounded-full cursor-pointer transition-all ${
+            activeModule === 'template' ? 'bg-dark text-white shadow-md scale-110' : 'text-gray-400 hover:text-dark'
+          }`}
+        >
           <DownloadCloud size={20} />
         </div>
         {/* 6. Log out */}
