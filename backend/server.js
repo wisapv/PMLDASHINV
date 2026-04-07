@@ -12,11 +12,11 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-// ปรับปรุงการเชื่อม Route ให้แยกส่วนชัดเจน
-app.use('/api', targetRoRoute);      // สำหรับ /api/target-ro
-app.use('/api', partProcRoute);    // สำหรับ /api/part-proc
-app.use('/api', mergeRoute);       // สำหรับ /api/merge
-app.use('/api', mainFormatRoute);  // สำหรับ /api/download-main และ /api/preview-main
+// จัด Route ให้ชัดเจน (URL จะกลายเป็น /api/target-ro/upload)
+app.use('/api/target-ro', targetRoRoute);      
+app.use('/api/part-proc', partProcRoute);    
+app.use('/api/merge', mergeRoute);       
+app.use('/api/main-format', mainFormatRoute);  
 app.use('/api/template', templateRoute); 
 
 const PORT = 3000;
