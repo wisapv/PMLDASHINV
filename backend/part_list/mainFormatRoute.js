@@ -1,4 +1,3 @@
-// ไฟล์: backend/part_list/mainFormatRoute.js
 const express = require('express');
 const { connectDB } = require('../database');
 const xlsx = require('xlsx');
@@ -7,29 +6,40 @@ const path = require('path');
 
 const router = express.Router();
 
-// ==========================================
-// 1. API สำหรับดาวน์โหลดไฟล์ Excel (.xlsx) จริง
-// ==========================================
+// ฟังก์ชันช่วยตรวจสอบและสร้างโฟลเดอร์ templates
+const templateDir = path.join(__dirname, '../templates');
+if (!fs.existsSync(templateDir)) {
+    fs.mkdirSync(templateDir, { recursive: true });
+}
+
 router.get('/download-main', async (req, res) => {
   try {
-    const templatePath = path.join(__dirname, '../templates/MainFormat.xlsx');
+    const templatePath = path.join(templateDir, 'MainFormat.xlsx');
+    
+    // หากไม่มีไฟล์ Template ให้แจ้งเตือนชัดเจน
     if (!fs.existsSync(templatePath)) {
-      return res.status(400).json({ error: 'Template file not found. Please upload template first.' });
+      return res.status(400).json({ 
+        error: 'ยังไม่มีไฟล์ Template กรุณาอัปโหลดไฟล์ MainFormat.xlsx ไว้ที่โฟลเดอร์ backend/templates ก่อน' 
+      });
     }
 
     const db = await connectDB();
+    // ดึงข้อมูลที่ Merge กันระหว่าง target_ro และ part_procurement
     const rows = await db.all(`
       SELECT t.data as target_data, p.data as proc_data
       FROM target_ro t
       INNER JOIN part_procurement p ON t.key_tg = p.key_pp
     `);
 
-    if (rows.length === 0) return res.status(404).json({ error: 'No merged data found.' });
+    if (!rows || rows.length === 0) {
+        return res.status(404).json({ error: 'ไม่พบข้อมูลที่จับคู่กันได้ (No merged data) กรุณาตรวจสอบ Key Matching' });
+    }
 
+    // อ่าน Template และเขียนข้อมูลลงไป
     const wbTemplate = xlsx.readFile(templatePath);
     const wsTemplate = wbTemplate.Sheets[wbTemplate.SheetNames[0]];
     const templateData = xlsx.utils.sheet_to_json(wsTemplate, { header: 1 });
-    const header = templateData.slice(0, 5);
+    const header = templateData.slice(0, 5); // เก็บ Header 5 บรรทัดแรกตามมาตรฐาน
 
     const dataRows = rows.map(row => {
       const t = JSON.parse(row.target_data);
@@ -56,68 +66,39 @@ router.get('/download-main', async (req, res) => {
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
     res.send(buffer);
   } catch (error) {
-    res.status(500).json({ error: 'Failed to generate Main Format file' });
+    console.error("Download Error:", error);
+    res.status(500).json({ error: 'เกิดข้อผิดพลาดในการสร้างไฟล์ Excel' });
   }
 });
 
-// ==========================================
-// 2. API ใหม่ สำหรับโชว์ Preview บนหน้าเว็บ (ส่งกลับเป็น JSON 27 คอลัมน์)
-// ==========================================
+// API สำหรับ Preview ข้อมูลก่อนดาวน์โหลด
 router.get('/preview-main', async (req, res) => {
-  try {
-    const db = await connectDB();
-    const rows = await db.all(`
-      SELECT t.data as target_data, p.data as proc_data
-      FROM target_ro t
-      INNER JOIN part_procurement p ON t.key_tg = p.key_pp
-    `);
-
-    if (rows.length === 0) return res.status(404).json({ error: 'No merged data found.' });
-
-    // สร้างข้อมูล JSON ให้ตรงกับ 27 หัวคอลัมน์ของ Template
-    const previewData = rows.map(row => {
-      const t = JSON.parse(row.target_data);
-      const p = JSON.parse(row.proc_data);
-
-      return {
-        "Company*": "AA",
-        "Company plant code*": "B",
-        "Group ID*": t['Group'] || "",
-        "CTL flag*": "6",
-        "Part No.*": p['PART #'] || "",
-        "Suffix*": p['Suffix No'] || "",
-        "Receiving company*": p['COMP'] || "",
-        "Receiving company plant code*": p['PLANT'] || "",
-        "Production process routing": p['Production Routing'] || "",
-        "Dock code*": p['DOCK'] || "",
-        "Supplier*": p['SUPL'] || "",
-        "Supplier plant code*": p['PLANT'] || "",
-        "Supplier shipping dock": p['S.DOCK'] || "",
-        "Previous process routing": "",
-        "Dummy": "",
-        "Kanban No.*": p['KBN'] || "",
-        "Source code*": p['Source'] || "",
-        "Hikiate matching key*": p['Dock Comb.'] || "",
-        "Model 1": p['COMP'] || "",
-        "Life cycle code*": p['Life Cycle Code'] || "",
-        "Vender share type": p['V.SHARE FLG[SYS L/O DATE BASIS]'] || "",
-        "Vender share value": p['V.SHARE VALUE'] || "",
-        "Order method*": p['ORD Method'] || "",
-        "Order lot*": p['QTY /CONT'] || "",
-        "Order lot size*": p['PACK QTY/CONT'] || "",
-        "Round up flag*": "3",
-        "Part name*": p['PART DESC'] || ""
-      };
-    });
-
-    res.json({
-      message: 'Preview generated successfully',
-      count: previewData.length,
-      data: previewData
-    });
-  } catch (error) {
-    res.status(500).json({ error: 'Failed to generate preview data' });
-  }
+    try {
+      const db = await connectDB();
+      const rows = await db.all(`
+        SELECT t.data as target_data, p.data as proc_data
+        FROM target_ro t
+        INNER JOIN part_procurement p ON t.key_tg = p.key_pp
+      `);
+  
+      if (!rows || rows.length === 0) return res.status(404).json({ error: 'ไม่พบข้อมูลสำหรับการ Preview' });
+  
+      const previewData = rows.map(row => {
+        const t = JSON.parse(row.target_data);
+        const p = JSON.parse(row.proc_data);
+        return {
+          "Group ID*": t['Group'] || "",
+          "Part No.*": p['PART #'] || "",
+          "Suffix*": p['Suffix No'] || "",
+          "Supplier*": p['SUPL'] || "",
+          "Part name*": p['PART DESC'] || ""
+        };
+      });
+  
+      res.json({ data: previewData });
+    } catch (error) {
+      res.status(500).json({ error: 'Failed to generate preview' });
+    }
 });
 
 module.exports = router;
