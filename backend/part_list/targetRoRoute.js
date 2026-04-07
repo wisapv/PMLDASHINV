@@ -1,7 +1,7 @@
 const express = require('express');
 const multer = require('multer');
 const xlsx = require('xlsx');
-const { connectDB } = require('../database'); // <-- นำเข้า DB
+const { connectDB } = require('../database');
 
 const router = express.Router();
 const upload = multer({ storage: multer.memoryStorage() });
@@ -35,17 +35,16 @@ router.post('/target-ro', upload.single('file'), async (req, res) => {
       return acc;
     }, []);
 
-    // --- ส่วนที่เพิ่มใหม่: บันทึกลง SQLite ---
     const db = await connectDB();
-    await db.exec('DELETE FROM target_ro'); // ล้างข้อมูลเก่าก่อน
+    // 🔴 เอา db.exec('DELETE FROM target_ro'); ออก เพื่อเก็บประวัติ
     
-    const stmt = await db.prepare('INSERT INTO target_ro (key_tg, data) VALUES (?, ?)');
+    const stmt = await db.prepare('INSERT INTO target_ro (key_tg, data, upload_at) VALUES (?, ?, ?)');
+    const now = new Date().toISOString(); // สร้างเวลาปัจจุบัน
+    
     for (const row of processedData) {
-      // เซฟ Key ไว้เทียบ และเซฟข้อมูลทั้งก้อนเป็น JSON
-      await stmt.run(row['Key matching TG'], JSON.stringify(row));
+      await stmt.run(row['Key matching TG'], JSON.stringify(row), now);
     }
     await stmt.finalize();
-    // ------------------------------------
 
     res.json({ message: 'Target R/O saved to DB successfully' });
   } catch (error) {

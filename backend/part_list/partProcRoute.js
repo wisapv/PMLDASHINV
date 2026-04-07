@@ -1,7 +1,7 @@
 const express = require('express');
 const multer = require('multer');
 const xlsx = require('xlsx');
-const { connectDB } = require('../database'); // <-- นำเข้า DB
+const { connectDB } = require('../database');
 
 const router = express.Router();
 const upload = multer({ storage: multer.memoryStorage() });
@@ -45,16 +45,16 @@ router.post('/part-procurement', upload.single('file'), async (req, res) => {
       return acc;
     }, []);
 
-    // --- ส่วนที่เพิ่มใหม่: บันทึกลง SQLite ---
     const db = await connectDB();
-    await db.exec('DELETE FROM part_procurement'); // ล้างข้อมูลเก่าก่อน
+    // 🔴 เอา db.exec('DELETE FROM part_procurement'); ออก เพื่อเก็บประวัติ
     
-    const stmt = await db.prepare('INSERT INTO part_procurement (key_pp, data) VALUES (?, ?)');
+    const stmt = await db.prepare('INSERT INTO part_procurement (key_pp, data, upload_at) VALUES (?, ?, ?)');
+    const now = new Date().toISOString();
+
     for (const row of processedData) {
-      await stmt.run(row['Key matching PP'], JSON.stringify(row));
+      await stmt.run(row['Key matching PP'], JSON.stringify(row), now);
     }
     await stmt.finalize();
-    // ------------------------------------
 
     res.json({ message: 'Part Procurement saved to DB successfully' });
   } catch (error) {
