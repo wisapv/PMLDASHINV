@@ -7,6 +7,7 @@ const targetRoRoute = require('./part_list/targetRoRoute');
 const partProcRoute = require('./part_list/partProcRoute');
 const mergeRoute = require('./part_list/mergeRoute'); 
 const mainFormatRoute = require('./part_list/mainFormatRoute');
+const batchRoute = require('./part_list/batchRoute');
 // 1. เพิ่มบรรทัดนี้: นำเข้าไฟล์ templateRoute
 const templateRoute = require('./part_list/templateRoute'); 
 
@@ -18,6 +19,8 @@ app.use('/api/part-list', targetRoRoute);
 app.use('/api/part-list', partProcRoute);
 app.use('/api/part-list', mergeRoute);
 app.use('/api/part-list', mainFormatRoute); 
+app.use('/api/batches', batchRoute);
+
 // 2. เพิ่มบรรทัดนี้: เชื่อม Route ให้รองรับ URL ที่ขึ้นต้นด้วย /api/template
 app.use('/api/template', templateRoute); 
 

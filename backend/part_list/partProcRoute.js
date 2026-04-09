@@ -14,25 +14,27 @@ function parseExcelDate(excelDate) {
   return new Date(cleanStr);
 }
 
+// ... (ส่วนหัวและฟังก์ชัน parseExcelDate เหมือนเดิม)
 router.post('/part-procurement', upload.single('file'), async (req, res) => {
   try {
     if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
+    const batchId = req.body.batchId; // 🔴 รับ batchId
+    if (!batchId) return res.status(400).json({ error: 'Missing batchId' });
 
     const workbook = xlsx.read(req.file.buffer, { type: 'buffer' });
     const sheet = workbook.Sheets[workbook.SheetNames[0]];
     const rawData = xlsx.utils.sheet_to_json(sheet);
-
     const today = new Date();
     today.setHours(0, 0, 0, 0);
 
     const processedData = rawData.reduce((acc, row) => {
+      // ... (โค้ดประมวลผลข้อมูลเหมือนเดิม)
       const rowDate = parseExcelDate(row['T/C TO (UNL)']);
       if (isNaN(rowDate) || rowDate <= today) return acc;
 
       const dock = String(row['DOCK'] || '').trim();
       const prodRouting = String(row['Production Routing'] || '').trim();
       const partNo = String(row['PART #'] || '').trim();
-      
       const dockComb = prodRouting === '' ? dock : dock + prodRouting;
       row['Dock Comb.'] = dockComb;
       
@@ -46,21 +48,22 @@ router.post('/part-procurement', upload.single('file'), async (req, res) => {
     }, []);
 
     const db = await connectDB();
-    // 🔴 เอา db.exec('DELETE FROM part_procurement'); ออก เพื่อเก็บประวัติ
-    
-    const stmt = await db.prepare('INSERT INTO part_procurement (key_pp, data, upload_at) VALUES (?, ?, ?)');
     const now = new Date().toISOString();
+    
+    // 🔴 บันทึก Batch ID
+    await db.run('INSERT OR IGNORE INTO upload_batches (batch_id, upload_date) VALUES (?, ?)', batchId, now);
 
+    // 🔴 บันทึกข้อมูลพร้อม Batch ID
+    const stmt = await db.prepare('INSERT INTO part_procurement (batch_id, key_pp, data, upload_at) VALUES (?, ?, ?, ?)');
     for (const row of processedData) {
-      await stmt.run(row['Key matching PP'], JSON.stringify(row), now);
+      await stmt.run(batchId, row['Key matching PP'], JSON.stringify(row), now);
     }
     await stmt.finalize();
 
-    res.json({ message: 'Part Procurement saved to DB successfully' });
+    res.json({ message: 'Part Procurement saved to DB successfully', batchId });
   } catch (error) {
     console.error(error);
     res.status(500).json({ error: 'Failed to process Part Procurement' });
   }
 });
-
 module.exports = router;

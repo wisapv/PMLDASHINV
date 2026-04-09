@@ -32,7 +32,8 @@ function App() {
           {activeModule === 'home' && <Home />}
           
           {/* ส่ง uploadTab ไปให้ ListCreate เพื่อเลือกว่าจะโชว์ TBOS หรือ Handheld */}
-          {activeModule === 'upload' && <ListCreate activeTab={uploadTab} />}
+          {/* เปลี่ยนจากแบบเดิมเป็นแบบนี้ */}
+          {activeModule === 'upload' && <ListCreate activeTab={uploadTab} setUploadTab={setUploadTab} />}
           {activeModule === 'template' && <TemplateManager />}
           {activeModule === 'dashboard' && (
             <>
