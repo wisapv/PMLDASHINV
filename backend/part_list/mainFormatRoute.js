@@ -6,7 +6,7 @@ const path = require('path');
 const archiver = require('archiver');
 const { buildPpIndex, cleanTargetRow, computeShop } = require('../lib/partMatching');
 const { buildMatchKey } = require('../lib/keyUtils');
-const { validateGroupPrefix, getStoredGroupPrefix, setStoredGroupPrefix } = require('../lib/groupPrefix');
+const { validateGroupPrefix, getStoredGroupPrefix, setStoredGroupPrefix, recordGroupPrefixUsage } = require('../lib/groupPrefix');
 
 const router = express.Router();
 
@@ -108,6 +108,7 @@ async function handlePreviewMain(req, res) {
       const { valid, error } = validateGroupPrefix(prefix);
       if (!valid) return res.status(400).json({ error });
       await setStoredGroupPrefix(db, batchId, prefix);
+      await recordGroupPrefixUsage(db, prefix);
       groupPrefix = prefix;
     } else {
       groupPrefix = await getStoredGroupPrefix(db, batchId);

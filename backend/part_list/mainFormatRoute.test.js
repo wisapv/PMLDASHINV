@@ -84,6 +84,11 @@ async function cleanupBatch(batchId) {
   await db.run('DELETE FROM upload_batches WHERE batch_id = ?', batchId);
 }
 
+async function cleanupPrefixHistory(prefix) {
+  const db = await connectDB();
+  await db.run('DELETE FROM group_prefix_history WHERE prefix = ?', prefix);
+}
+
 test.before(async () => {
   await initDB();
 
@@ -118,6 +123,31 @@ test('handlePreviewMain: prefix in request persists to upload_batches and is use
     assert.strictEqual(row.group_prefix, 'CUSTOM1');
   } finally {
     await cleanupBatch(batchId);
+    await cleanupPrefixHistory('CUSTOM1');
+  }
+});
+
+test('handlePreviewMain: providing a prefix also upserts group_prefix_history (insert new, then update last_used_at on reuse)', async () => {
+  const batchId = 'TEST-GP-HISTUPSERT-' + Date.now();
+  const prefix = 'HISTUPSERT-' + Date.now();
+  await seedBatch(batchId);
+  try {
+    await handlePreviewMain({ query: { batchId, prefix } }, mockRes());
+
+    const db = await connectDB();
+    const rowsAfterFirst = await db.all('SELECT * FROM group_prefix_history WHERE prefix = ?', prefix);
+    assert.strictEqual(rowsAfterFirst.length, 1);
+    const firstSeenAt = rowsAfterFirst[0].last_used_at;
+
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    await handlePreviewMain({ query: { batchId, prefix } }, mockRes());
+
+    const rowsAfterSecond = await db.all('SELECT * FROM group_prefix_history WHERE prefix = ?', prefix);
+    assert.strictEqual(rowsAfterSecond.length, 1, 'must update the existing row, not duplicate it');
+    assert.ok(rowsAfterSecond[0].last_used_at >= firstSeenAt);
+  } finally {
+    await cleanupBatch(batchId);
+    await cleanupPrefixHistory(prefix);
   }
 });
 
@@ -133,6 +163,7 @@ test('handlePreviewMain: a later call without prefix reuses the previously store
     assert.strictEqual(res2.body.data[0]['Group ID*'], 'STORED9A1');
   } finally {
     await cleanupBatch(batchId);
+    await cleanupPrefixHistory('STORED9');
   }
 });
 
@@ -168,6 +199,7 @@ test('handlePreviewMain: invalid prefix (each disallowed character, and empty st
     assert.strictEqual(row.group_prefix, 'GOODPFX');
   } finally {
     await cleanupBatch(batchId);
+    await cleanupPrefixHistory('GOODPFX');
   }
 });
 
@@ -202,5 +234,6 @@ test('preview-main, download-main, and process-assign-addr all use the same stor
     assert.strictEqual(assignRes.body.data[0].Group, expectedGroup);
   } finally {
     await cleanupBatch(batchId);
+    await cleanupPrefixHistory('CROSSPFX');
   }
 });

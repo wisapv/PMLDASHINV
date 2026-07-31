@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import {
   CheckCircle2, FileSpreadsheet, Database, Loader2, Download,
   X, CheckSquare, Square, Merge, History, Plus, Filter,
-  ArrowRight, AlertTriangle
+  ArrowRight, AlertTriangle, ChevronDown
 } from 'lucide-react';
 import HandheldManager from './HandheldManager';
 
@@ -12,6 +12,14 @@ const generateBatchId = () => {
 };
 
 const DEFAULT_GROUP_PREFIX = 'SR481D';
+const INVALID_PREFIX_CHARS = /[/\\:*?"<>|]/;
+
+function validatePrefixInput(value) {
+  if (!value || value.trim() === '') return 'Group prefix cannot be empty.';
+  const invalidChar = [...value].find((ch) => INVALID_PREFIX_CHARS.test(ch));
+  if (invalidChar) return `Group prefix contains an invalid character: "${invalidChar}". Avoid / \\ : * ? " < > |`;
+  return '';
+}
 
 const ListCreate = ({ activeTab, setUploadTab }) => {
   const [subTab, setSubTab] = useState('new');
@@ -29,16 +37,41 @@ const ListCreate = ({ activeTab, setUploadTab }) => {
   const [duplicateHeaderWarning, setDuplicateHeaderWarning] = useState('');
   const [groupPrefix, setGroupPrefix] = useState(DEFAULT_GROUP_PREFIX);
   const [groupPrefixError, setGroupPrefixError] = useState('');
+  const [groupPrefixHistory, setGroupPrefixHistory] = useState([]);
+  const [isPrefixDropdownOpen, setIsPrefixDropdownOpen] = useState(false);
+  const [isNewPrefixModalOpen, setIsNewPrefixModalOpen] = useState(false);
+  const [newPrefixInput, setNewPrefixInput] = useState('');
+  const [newPrefixModalError, setNewPrefixModalError] = useState('');
+  const [deletePrefixTarget, setDeletePrefixTarget] = useState(null);
+  const [isDeletingPrefix, setIsDeletingPrefix] = useState(false);
 
   const fileInputRef1 = useRef(null);
   const fileInputRef2 = useRef(null);
+  const prefixDropdownRef = useRef(null);
+  const hasInitializedPrefixRef = useRef(false);
 
   useEffect(() => {
     if (activeTab === 'TBOS') {
       setCurrentBatchId(prev => prev ? prev : generateBatchId());
       fetchHistory();
+      fetchGroupPrefixHistory().then((history) => {
+        if (!hasInitializedPrefixRef.current) {
+          setGroupPrefix(history[0]?.prefix || DEFAULT_GROUP_PREFIX);
+          hasInitializedPrefixRef.current = true;
+        }
+      });
     }
   }, [activeTab]);
+
+  useEffect(() => {
+    const handleClickOutside = (e) => {
+      if (prefixDropdownRef.current && !prefixDropdownRef.current.contains(e.target)) {
+        setIsPrefixDropdownOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
 
   useEffect(() => {
     if (!duplicateHeaderWarning) return;
@@ -53,7 +86,7 @@ const ListCreate = ({ activeTab, setUploadTab }) => {
     }
   };
 
-  const resetUpload = () => {
+  const resetUpload = async () => {
     setStep('idle');
     setUploadStatus({ target: false, proc: false });
     setCurrentBatchId(generateBatchId());
@@ -61,8 +94,9 @@ const ListCreate = ({ activeTab, setUploadTab }) => {
     setTbosRemindData([]);
     setSelectedPreviewGroup('All');
     setDownloadFiles([]);
-    setGroupPrefix(DEFAULT_GROUP_PREFIX);
     setGroupPrefixError('');
+    const history = await fetchGroupPrefixHistory();
+    setGroupPrefix(history[0]?.prefix || DEFAULT_GROUP_PREFIX);
   };
 
   const fetchHistory = async () => {
@@ -73,6 +107,59 @@ const ListCreate = ({ activeTab, setUploadTab }) => {
         setHistoryBatches(data);
       }
     } catch (err) { console.error("Failed to fetch history", err); }
+  };
+
+  const fetchGroupPrefixHistory = async () => {
+    try {
+      const response = await fetch('http://localhost:3000/api/part-list/group-prefix-history');
+      if (response.ok) {
+        const data = await response.json();
+        setGroupPrefixHistory(data);
+        return data;
+      }
+    } catch (err) { console.error("Failed to fetch group prefix history", err); }
+    return [];
+  };
+
+  const handleSelectPrefix = (prefix) => {
+    setGroupPrefix(prefix);
+    setGroupPrefixError('');
+    setIsPrefixDropdownOpen(false);
+  };
+
+  const openNewPrefixModal = () => {
+    setNewPrefixInput('');
+    setNewPrefixModalError('');
+    setIsNewPrefixModalOpen(true);
+  };
+
+  const handleConfirmNewPrefix = () => {
+    const error = validatePrefixInput(newPrefixInput);
+    if (error) { setNewPrefixModalError(error); return; }
+    setGroupPrefix(newPrefixInput);
+    setGroupPrefixError('');
+    setIsNewPrefixModalOpen(false);
+  };
+
+  const handleConfirmDeletePrefixHistory = async () => {
+    if (!deletePrefixTarget) return;
+    const target = deletePrefixTarget;
+    setIsDeletingPrefix(true);
+    try {
+      const response = await fetch(`http://localhost:3000/api/part-list/group-prefix-history/${encodeURIComponent(target)}`, { method: 'DELETE' });
+      if (response.ok) {
+        const updatedHistory = await fetchGroupPrefixHistory();
+        if (groupPrefix === target) {
+          setGroupPrefix(updatedHistory[0]?.prefix || DEFAULT_GROUP_PREFIX);
+        }
+      } else {
+        alert("Failed to delete prefix from history.");
+      }
+    } catch (err) { alert("Server error while deleting prefix from history."); }
+    finally {
+      setIsDeletingPrefix(false);
+      setDeletePrefixTarget(null);
+    }
   };
 
   const handleDeleteBatch = async (batchId) => {
@@ -153,6 +240,7 @@ const ListCreate = ({ activeTab, setUploadTab }) => {
         const dynamicGroupOptions = uniqueGroups.map((grp, index) => ({ id: `grp_${index}`, label: `Group: ${grp}`, value: grp, isChecked: true }));
         setDownloadFiles(dynamicGroupOptions);
         setStep('preview');
+        if (includePrefix) fetchGroupPrefixHistory();
       } else if (response.status === 400 && result.error) {
         setGroupPrefixError(result.error);
         setStep('idle');
@@ -201,15 +289,54 @@ const ListCreate = ({ activeTab, setUploadTab }) => {
                   </div>
 
                   <div className="w-full bg-white px-6 py-4 rounded-2xl border border-ink/5 shadow-[0_2px_10px_rgba(20,20,15,0.04)] flex flex-col gap-2">
-                    <label htmlFor="group-prefix-input" className="text-sm font-bold text-muted">Group Prefix</label>
-                    <input
-                      id="group-prefix-input"
-                      type="text"
-                      value={groupPrefix}
-                      onChange={(e) => { setGroupPrefix(e.target.value); if (groupPrefixError) setGroupPrefixError(''); }}
-                      placeholder={DEFAULT_GROUP_PREFIX}
-                      className={`w-full bg-[#FAFAF7] border rounded-xl px-4 py-2.5 text-sm font-mono text-ink focus:outline-none focus:ring-2 transition-colors ${groupPrefixError ? 'border-red-300 focus:ring-red-200' : 'border-ink/10 focus:ring-accent/40'}`}
-                    />
+                    <label className="text-sm font-bold text-muted">Group Prefix</label>
+                    <div className="flex items-center gap-2">
+                      <div className="relative flex-1" ref={prefixDropdownRef}>
+                        <button
+                          type="button"
+                          id="group-prefix-input"
+                          onClick={() => setIsPrefixDropdownOpen(prev => !prev)}
+                          className={`w-full flex items-center justify-between bg-[#FAFAF7] border rounded-xl px-4 py-2.5 text-sm font-mono text-ink focus:outline-none transition-colors ${groupPrefixError ? 'border-red-300' : 'border-ink/10 hover:border-ink/20'}`}
+                        >
+                          <span>{groupPrefix}</span>
+                          <ChevronDown size={16} className={`text-muted transition-transform ${isPrefixDropdownOpen ? 'rotate-180' : ''}`} />
+                        </button>
+
+                        {isPrefixDropdownOpen && (
+                          <div className="absolute z-20 mt-2 w-full bg-white border border-ink/10 rounded-xl shadow-lg overflow-hidden max-h-56 overflow-y-auto">
+                            {(groupPrefixHistory.length > 0 ? groupPrefixHistory : [{ prefix: DEFAULT_GROUP_PREFIX, last_used_at: null }]).map((entry) => (
+                              <div key={entry.prefix} className="flex items-center justify-between px-2 hover:bg-accent/10 group">
+                                <button
+                                  type="button"
+                                  onClick={() => handleSelectPrefix(entry.prefix)}
+                                  className={`flex-1 text-left text-sm font-mono px-2 py-2.5 ${entry.prefix === groupPrefix ? 'text-ink font-bold' : 'text-ink/70'}`}
+                                >
+                                  {entry.prefix}
+                                </button>
+                                {groupPrefixHistory.length > 0 && (
+                                  <button
+                                    type="button"
+                                    onClick={(e) => { e.stopPropagation(); setDeletePrefixTarget(entry.prefix); }}
+                                    className="text-muted hover:text-red-500 transition-colors p-1.5 opacity-0 group-hover:opacity-100"
+                                    title="Remove from history"
+                                  >
+                                    <X size={14} />
+                                  </button>
+                                )}
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+
+                      <button
+                        type="button"
+                        onClick={openNewPrefixModal}
+                        className="flex items-center gap-1.5 bg-ink/5 hover:bg-ink/10 text-ink font-bold text-sm px-4 py-2.5 rounded-xl transition-colors whitespace-nowrap"
+                      >
+                        <Plus size={16} /> New
+                      </button>
+                    </div>
                     {groupPrefixError && (
                       <p className="text-xs font-semibold text-red-500">{groupPrefixError}</p>
                     )}
@@ -415,6 +542,48 @@ const ListCreate = ({ activeTab, setUploadTab }) => {
               <button onClick={() => setIsModalOpen(false)} className="px-6 py-2.5 rounded-xl font-bold text-muted hover:bg-[#FAFAF7] transition-colors">Cancel</button>
               <button onClick={handleConfirmDownload} className={`px-6 py-2.5 rounded-xl font-bold transition-all shadow-md ${downloadFiles.some(f => f.isChecked) ? 'bg-ink text-accent hover:scale-105' : 'bg-ink/10 text-ink/30 cursor-not-allowed shadow-none'}`}>
                 Download
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {isNewPrefixModalOpen && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/40 backdrop-blur-sm animate-in fade-in">
+          <div className="bg-white rounded-4xl p-8 w-[400px] shadow-2xl animate-in zoom-in-95 relative">
+            <button onClick={() => setIsNewPrefixModalOpen(false)} className="absolute top-6 right-6 text-muted hover:text-ink transition-colors"><X size={20} /></button>
+            <h3 className="font-display text-xl font-bold text-ink mb-2">New Group Prefix</h3>
+            <p className="text-sm text-muted mb-6">Type a new prefix to use for this batch.</p>
+
+            <input
+              type="text"
+              autoFocus
+              value={newPrefixInput}
+              onChange={(e) => { setNewPrefixInput(e.target.value); if (newPrefixModalError) setNewPrefixModalError(''); }}
+              placeholder={DEFAULT_GROUP_PREFIX}
+              className={`w-full bg-[#FAFAF7] border rounded-xl px-4 py-2.5 text-sm font-mono text-ink focus:outline-none focus:ring-2 transition-colors ${newPrefixModalError ? 'border-red-300 focus:ring-red-200' : 'border-ink/10 focus:ring-accent/40'}`}
+            />
+            {newPrefixModalError && (
+              <p className="text-xs font-semibold text-red-500 mt-2">{newPrefixModalError}</p>
+            )}
+
+            <div className="flex justify-end gap-3 mt-6">
+              <button onClick={() => setIsNewPrefixModalOpen(false)} className="px-6 py-2.5 rounded-xl font-bold text-muted hover:bg-[#FAFAF7] transition-colors">Cancel</button>
+              <button onClick={handleConfirmNewPrefix} className="bg-ink text-accent px-6 py-2.5 rounded-xl font-bold hover:scale-105 transition-all shadow-md">Use this prefix</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {deletePrefixTarget && (
+        <div className="fixed inset-0 z-[110] flex items-center justify-center bg-black/40 backdrop-blur-sm animate-in fade-in">
+          <div className="bg-white rounded-4xl p-8 w-[380px] shadow-2xl animate-in zoom-in-95 relative">
+            <h3 className="font-display text-lg font-bold text-ink mb-2">ยืนยันการลบ prefix นี้ออกจากประวัติ?</h3>
+            <p className="text-sm text-muted mb-6">Prefix: <span className="font-mono font-bold text-ink">{deletePrefixTarget}</span></p>
+            <div className="flex justify-end gap-3">
+              <button onClick={() => setDeletePrefixTarget(null)} disabled={isDeletingPrefix} className="px-6 py-2.5 rounded-xl font-bold text-muted hover:bg-[#FAFAF7] transition-colors disabled:opacity-50">Cancel</button>
+              <button onClick={handleConfirmDeletePrefixHistory} disabled={isDeletingPrefix} className="bg-red-500 text-white px-6 py-2.5 rounded-xl font-bold hover:bg-red-600 transition-all shadow-md disabled:opacity-50">
+                {isDeletingPrefix ? 'Deleting...' : 'Confirm'}
               </button>
             </div>
           </div>

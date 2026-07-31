@@ -36,6 +36,10 @@ async function initDB() {
       data TEXT,
       upload_at DATETIME DEFAULT CURRENT_TIMESTAMP
     );
+    CREATE TABLE IF NOT EXISTS group_prefix_history (
+      prefix TEXT PRIMARY KEY,
+      last_used_at TEXT NOT NULL
+    );
   `);
   // ปรับ schema ของตารางเดิมให้มี group_prefix โดยไม่กระทบข้อมูลเดิม
   const uploadBatchesColumns = await db.all(`PRAGMA table_info(upload_batches)`);

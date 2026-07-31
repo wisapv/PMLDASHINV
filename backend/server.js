@@ -6,6 +6,7 @@ const { initDB } = require('./database');
 const targetRoRoute = require('./part_list/targetRoRoute');
 const partProcRoute = require('./part_list/partProcRoute');
 const mainFormatRoute = require('./part_list/mainFormatRoute');
+const groupPrefixHistoryRoute = require('./part_list/groupPrefixHistoryRoute');
 const batchRoute = require('./part_list/batchRoute');
 const handheldRoute = require('./handheld_part_list/handheldRoute');
 const templateRoute = require('./part_list/templateRoute'); 
@@ -22,6 +23,7 @@ app.use(express.urlencoded({ limit: '50mb', extended: true }));
 app.use('/api/part-list', targetRoRoute);
 app.use('/api/part-list', partProcRoute);
 app.use('/api/part-list', mainFormatRoute);
+app.use('/api/part-list', groupPrefixHistoryRoute);
 app.use('/api/batches', batchRoute);
 app.use('/api/template', templateRoute); 
 
