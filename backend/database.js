@@ -37,6 +37,12 @@ async function initDB() {
       upload_at DATETIME DEFAULT CURRENT_TIMESTAMP
     );
   `);
+  // ปรับ schema ของตารางเดิมให้มี group_prefix โดยไม่กระทบข้อมูลเดิม
+  const uploadBatchesColumns = await db.all(`PRAGMA table_info(upload_batches)`);
+  if (!uploadBatchesColumns.some((col) => col.name === 'group_prefix')) {
+    await db.exec(`ALTER TABLE upload_batches ADD COLUMN group_prefix TEXT`);
+  }
+
   console.log("SQLite Database initialized with Batch System.");
   return db;
 }

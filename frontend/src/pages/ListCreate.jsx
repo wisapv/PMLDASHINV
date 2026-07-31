@@ -11,6 +11,8 @@ const generateBatchId = () => {
   return `B-${d.getFullYear()}${String(d.getMonth()+1).padStart(2,'0')}${String(d.getDate()).padStart(2,'0')}-${String(d.getHours()).padStart(2,'0')}${String(d.getMinutes()).padStart(2,'0')}${String(d.getSeconds()).padStart(2,'0')}`;
 };
 
+const DEFAULT_GROUP_PREFIX = 'SR481D';
+
 const ListCreate = ({ activeTab, setUploadTab }) => {
   const [subTab, setSubTab] = useState('new');
   const [currentBatchId, setCurrentBatchId] = useState('');
@@ -25,6 +27,8 @@ const ListCreate = ({ activeTab, setUploadTab }) => {
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [downloadFiles, setDownloadFiles] = useState([]);
   const [duplicateHeaderWarning, setDuplicateHeaderWarning] = useState('');
+  const [groupPrefix, setGroupPrefix] = useState(DEFAULT_GROUP_PREFIX);
+  const [groupPrefixError, setGroupPrefixError] = useState('');
 
   const fileInputRef1 = useRef(null);
   const fileInputRef2 = useRef(null);
@@ -57,6 +61,8 @@ const ListCreate = ({ activeTab, setUploadTab }) => {
     setTbosRemindData([]);
     setSelectedPreviewGroup('All');
     setDownloadFiles([]);
+    setGroupPrefix(DEFAULT_GROUP_PREFIX);
+    setGroupPrefixError('');
   };
 
   const fetchHistory = async () => {
@@ -84,7 +90,9 @@ const ListCreate = ({ activeTab, setUploadTab }) => {
     setSubTab('new');
     setSelectedPreviewGroup('All');
     setTbosRemindData([]);
-    handleMergeData(batchId);
+    // Re-viewing an already-merged batch must use whatever prefix is already
+    // stored for it, not silently overwrite it with the input's current value.
+    handleMergeData(batchId, { includePrefix: false });
   };
 
   const handleFileChangeBox1 = async (e) => {
@@ -129,10 +137,13 @@ const ListCreate = ({ activeTab, setUploadTab }) => {
     e.target.value = null;
   };
 
-  const handleMergeData = async (batchIdToMerge = currentBatchId) => {
+  const handleMergeData = async (batchIdToMerge = currentBatchId, { includePrefix = true } = {}) => {
     try {
       setStep('generating');
-      const response = await fetch(`http://localhost:3000/api/part-list/preview-main?batchId=${batchIdToMerge}`);
+      setGroupPrefixError('');
+      const params = new URLSearchParams({ batchId: batchIdToMerge });
+      if (includePrefix) params.set('prefix', groupPrefix);
+      const response = await fetch(`http://localhost:3000/api/part-list/preview-main?${params.toString()}`);
       const result = await response.json();
       if (response.ok) {
         setPreviewData(result.data);
@@ -142,6 +153,9 @@ const ListCreate = ({ activeTab, setUploadTab }) => {
         const dynamicGroupOptions = uniqueGroups.map((grp, index) => ({ id: `grp_${index}`, label: `Group: ${grp}`, value: grp, isChecked: true }));
         setDownloadFiles(dynamicGroupOptions);
         setStep('preview');
+      } else if (response.status === 400 && result.error) {
+        setGroupPrefixError(result.error);
+        setStep('idle');
       } else { alert("Merge Failed!"); setStep('idle'); }
     } catch (error) { alert("Server Error during merge!"); setStep('idle'); }
   };
@@ -184,6 +198,21 @@ const ListCreate = ({ activeTab, setUploadTab }) => {
                   <div className="w-full bg-white px-6 py-3 rounded-2xl border border-ink/5 shadow-[0_2px_10px_rgba(20,20,15,0.04)] flex justify-between items-center">
                     <span className="text-sm font-bold text-muted">Current Batch ID:</span>
                     <span className="text-sm font-mono bg-ink/5 px-3 py-1 rounded-md text-ink">{currentBatchId}</span>
+                  </div>
+
+                  <div className="w-full bg-white px-6 py-4 rounded-2xl border border-ink/5 shadow-[0_2px_10px_rgba(20,20,15,0.04)] flex flex-col gap-2">
+                    <label htmlFor="group-prefix-input" className="text-sm font-bold text-muted">Group Prefix</label>
+                    <input
+                      id="group-prefix-input"
+                      type="text"
+                      value={groupPrefix}
+                      onChange={(e) => { setGroupPrefix(e.target.value); if (groupPrefixError) setGroupPrefixError(''); }}
+                      placeholder={DEFAULT_GROUP_PREFIX}
+                      className={`w-full bg-[#FAFAF7] border rounded-xl px-4 py-2.5 text-sm font-mono text-ink focus:outline-none focus:ring-2 transition-colors ${groupPrefixError ? 'border-red-300 focus:ring-red-200' : 'border-ink/10 focus:ring-accent/40'}`}
+                    />
+                    {groupPrefixError && (
+                      <p className="text-xs font-semibold text-red-500">{groupPrefixError}</p>
+                    )}
                   </div>
 
                   <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 w-full">

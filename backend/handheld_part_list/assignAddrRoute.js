@@ -7,6 +7,7 @@ const { buildPpIndex, cleanTargetRow, dedupeDockEqualsSupplierRows } = require('
 const { buildMatchKey } = require('../lib/keyUtils');
 const { parseExcelDate } = require('../lib/dateUtils');
 const { getField } = require('../lib/fieldAliases');
+const { getStoredGroupPrefix } = require('../lib/groupPrefix');
 const router = express.Router();
 const upload = multer({ storage: multer.memoryStorage() });
 
@@ -73,12 +74,13 @@ router.post('/export-excel', express.json({ limit: '50mb' }), (req, res) => {
     }
 });
 
-router.post('/process-assign-addr', upload.single('file'), async (req, res) => {
+async function handleProcessAssignAddr(req, res) {
     try {
         if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
         const { batchId } = req.body;
-        
+
         const db = await connectDB();
+        const groupPrefix = await getStoredGroupPrefix(db, batchId);
         const tgRaw = await db.all('SELECT data FROM target_ro WHERE batch_id = ?', batchId);
         const ppRaw = await db.all('SELECT data FROM part_procurement WHERE batch_id = ?', batchId);
 
@@ -195,7 +197,7 @@ router.post('/process-assign-addr', upload.single('file'), async (req, res) => {
 
                 return {
                     Shop: finalShop,
-                    Group: 'SR481D' + finalShop + source,
+                    Group: groupPrefix + finalShop + source,
                     Dock: ppDock,
                     Supplier: p['SUPL'] || p['SUPL '] || "",
                     "S.plant": p['PLANT'] || p['PLANT '] || "",             
@@ -226,7 +228,10 @@ router.post('/process-assign-addr', upload.single('file'), async (req, res) => {
         console.error(error);
         res.status(500).json({ error: 'Process Failed' });
     }
-});
+}
+
+router.post('/process-assign-addr', upload.single('file'), handleProcessAssignAddr);
 
 module.exports = router;
 module.exports.evaluatePicAndShop = evaluatePicAndShop;
+module.exports.handleProcessAssignAddr = handleProcessAssignAddr;

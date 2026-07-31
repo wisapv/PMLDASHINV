@@ -6,6 +6,7 @@ const path = require('path');
 const archiver = require('archiver');
 const { buildPpIndex, cleanTargetRow, computeShop } = require('../lib/partMatching');
 const { buildMatchKey } = require('../lib/keyUtils');
+const { validateGroupPrefix, getStoredGroupPrefix, setStoredGroupPrefix } = require('../lib/groupPrefix');
 
 const router = express.Router();
 
@@ -17,16 +18,17 @@ const generateExcelBuffer = (header, dataRows) => {
   return xlsx.write(wb, { type: 'buffer', bookType: 'xlsx' });
 };
 
-router.get('/download-main', async (req, res) => {
+async function handleDownloadMain(req, res) {
   try {
     const templatePath = path.join(__dirname, '../templates/MainFormat.xlsx');
     if (!fs.existsSync(templatePath)) return res.status(400).json({ error: 'Template file not found.' });
 
-    const { batchId, groups } = req.query; 
+    const { batchId, groups } = req.query;
     if (!batchId) return res.status(400).json({ error: 'Missing batchId' });
     const selectedGroups = groups ? groups.split(',') : [];
 
     const db = await connectDB();
+    const groupPrefix = await getStoredGroupPrefix(db, batchId);
     const tgRows = await db.all('SELECT data FROM target_ro WHERE batch_id = ?', batchId);
     const ppRows = await db.all('SELECT data FROM part_procurement WHERE batch_id = ?', batchId);
 
@@ -51,7 +53,7 @@ router.get('/download-main', async (req, res) => {
 
         if (shop === 'K') continue;
 
-        t['Group'] = 'SR481D' + shop + source;
+        t['Group'] = groupPrefix + shop + source;
         validRows.push({ target_data: t, proc_data: p });
       }
     }
@@ -87,17 +89,30 @@ router.get('/download-main', async (req, res) => {
         const dataRows = validRows.filter(r => r.target_data['Group'] === groupName).map(r => generateDataRow(r.target_data, r.proc_data));
         if (dataRows.length > 0) archive.append(generateExcelBuffer(header, dataRows), { name: `${folderName}/PartList_${groupName}.xlsx` });
       }
-      await archive.finalize(); 
+      await archive.finalize();
     }
   } catch (error) { res.status(500).json({ error: 'Failed' }); }
-});
+}
 
-router.get('/preview-main', async (req, res) => {
+router.get('/download-main', handleDownloadMain);
+
+async function handlePreviewMain(req, res) {
   try {
-    const { batchId } = req.query; 
+    const { batchId, prefix } = req.query;
     if (!batchId) return res.status(400).json({ error: 'Missing batchId' });
 
     const db = await connectDB();
+
+    let groupPrefix;
+    if (prefix !== undefined && prefix !== null) {
+      const { valid, error } = validateGroupPrefix(prefix);
+      if (!valid) return res.status(400).json({ error });
+      await setStoredGroupPrefix(db, batchId, prefix);
+      groupPrefix = prefix;
+    } else {
+      groupPrefix = await getStoredGroupPrefix(db, batchId);
+    }
+
     const tgRows = await db.all('SELECT data FROM target_ro WHERE batch_id = ?', batchId);
     const ppRows = await db.all('SELECT data FROM part_procurement WHERE batch_id = ?', batchId);
 
@@ -125,7 +140,7 @@ router.get('/preview-main', async (req, res) => {
 
         if (shop === 'K') continue;
 
-        t['Group'] = 'SR481D' + shop + source;
+        t['Group'] = groupPrefix + shop + source;
 
         previewData.push({
           "Company*": "AA",
@@ -172,6 +187,10 @@ router.get('/preview-main', async (req, res) => {
     // 🔴 ส่งข้อมูล remind กลับไปพร้อมกัน
     res.json({ message: 'Success', count: previewData.length, data: previewData, remind: remindData, duplicateKeys });
   } catch (error) { res.status(500).json({ error: 'Failed' }); }
-});
+}
+
+router.get('/preview-main', handlePreviewMain);
 
 module.exports = router;
+module.exports.handleDownloadMain = handleDownloadMain;
+module.exports.handlePreviewMain = handlePreviewMain;
