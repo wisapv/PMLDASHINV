@@ -1,13 +1,60 @@
 import React, { useState } from 'react';
+
 import {
-  AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer,
-  BarChart, Bar, Cell, PieChart, Pie,
+  ResponsiveContainer,BarChart,Bar,XAxis,YAxis,Tooltip,Cell,PieChart,Pie,
 } from 'recharts';
+
 import { ChevronDown } from 'lucide-react';
 import Sparkle from '../components/Sparkle';
 
 // --- ข้อมูลจำลองสำหรับหน้า Overview ---
-const trendData = [ { time: '08:00', count: 30 }, { time: '10:00', count: 85 }, { time: '12:00', count: 45 }, { time: '14:00', count: 90 }, { time: '16:00', count: 65 } ];
+const deviceData = [
+  {
+    id: 'HH-01',
+    model: 'Zebra TC53e',
+    status: 'In use',
+    shop: 'Shop A',
+    line: 'FN2',
+    battery: 82,
+    lastSync: '10 sec',
+  },
+  {
+    id: 'HH-02',
+    model: 'Zebra TC58',
+    status: 'In use',
+    shop: 'TTAT',
+    line: 'Line B',
+    battery: 71,
+    lastSync: '30 sec',
+  },
+  {
+    id: 'HH-03',
+    model: 'Zebra MC3400',
+    status: 'Low battery',
+    shop: 'Shop W',
+    line: 'WH01',
+    battery: 24,
+    lastSync: '2 min',
+  },
+  {
+    id: 'HH-04',
+    model: 'Zebra TC53e',
+    status: 'Offline',
+    shop: 'Shop T',
+    line: 'TR2',
+    battery: 18,
+    lastSync: '2 hr',
+  },
+  {
+    id: 'HH-05',
+    model: 'Zebra TC501',
+    status: 'Available',
+    shop: 'Unassigned',
+    line: 'Ready to use',
+    battery: 96,
+    lastSync: '20 sec',
+  },
+];
 const shopData = [ { name: 'A', checked: 85, remain: 15 }, { name: 'W', checked: 60, remain: 40 }, { name: 'T', checked: 30, remain: 70 }, { name: 'K', checked: 15, remain: 85 }, { name: 'R', checked: 5, remain: 95 } ];
 const overallData = [ { name: 'Checked', value: 280, color: '#D7FF3F' }, { name: 'Remaining', value: 146, color: '#14140F' } ];
 const donutData = [ { name: 'Done', value: 68, color: '#D7FF3F' }, { name: 'Remain', value: 32, color: '#F3F2ED' } ];
@@ -36,6 +83,41 @@ const statusStyle = (status) => {
   if (status === 'Done') return { bg: 'bg-accent', text: 'text-ink' };
   if (status === 'Checking') return { bg: 'bg-ink', text: 'text-accent' };
   return { bg: 'bg-ink/[0.06]', text: 'text-[#B5B2A8]' };
+};
+const deviceStatusStyle = (status) => {
+  if (status === 'In use') {
+    return {
+      badge: 'bg-ink text-accent',
+      dot: 'bg-accent',
+      battery: 'bg-accent',
+      text: 'text-ink',
+    };
+  }
+
+  if (status === 'Low battery') {
+    return {
+      badge: 'bg-amber-100 text-amber-700',
+      dot: 'bg-amber-500',
+      battery: 'bg-amber-400',
+      text: 'text-amber-600',
+    };
+  }
+
+  if (status === 'Offline') {
+    return {
+      badge: 'bg-red-100 text-red-600',
+      dot: 'bg-red-500',
+      battery: 'bg-red-400',
+      text: 'text-red-500',
+    };
+  }
+
+  return {
+    badge: 'bg-accent text-ink',
+    dot: 'bg-ink',
+    battery: 'bg-accent',
+    text: 'text-ink',
+  };
 };
 
 const Overview = () => {
@@ -74,18 +156,117 @@ const Overview = () => {
         {/* Left Column */}
         <div className="flex-[2.4] min-w-0 flex flex-col gap-5">
           <div className="bg-white rounded-4xl p-[26px] shadow-[0_2px_12px_rgba(20,20,15,0.04)] border border-ink/5 h-[300px] flex flex-col relative overflow-hidden">
-            <h3 className="font-bold text-sm flex items-center gap-2 mb-5 text-ink"><Sparkle size={8} /> Scanning Trend</h3>
-            <div className="flex-1 w-full -ml-4">
-              <ResponsiveContainer width="100%" height="100%">
-                <AreaChart data={trendData} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
-                  <defs><linearGradient id="colorCount" x1="0" y1="0" x2="0" y2="1"><stop offset="5%" stopColor="#D7FF3F" stopOpacity={0.45}/><stop offset="95%" stopColor="#D7FF3F" stopOpacity={0}/></linearGradient></defs>
-                  <XAxis dataKey="time" axisLine={false} tickLine={false} tick={{fontSize: 10, fill: '#9B9890'}} dy={10} />
-                  <YAxis axisLine={false} tickLine={false} tick={{fontSize: 10, fill: '#9B9890'}} />
-                  <Tooltip contentStyle={{ borderRadius: '12px', border: 'none', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)' }} />
-                  <Area type="monotone" dataKey="count" stroke="#14140F" strokeWidth={1.5} fillOpacity={1} fill="url(#colorCount)" />
-                </AreaChart>
-              </ResponsiveContainer>
+
+            <div className="flex items-start justify-between mb-4">
+
+              <div>
+                <h3 className="font-bold text-sm flex items-center gap-2 text-ink">
+                  <Sparkle size={8} />
+                  Device Status
+                </h3>
+
+                <p className="text-[10px] text-muted mt-1">
+                  Handheld availability and current line assignment
+                </p>
+              </div>
+
+              <div className="flex gap-2">
+
+                <div className="bg-[#F7F7F3] rounded-xl px-6 py-2">
+                  <p className="text-[8px] uppercase font-bold text-muted">
+                    In use
+                  </p>
+                  <p className="font-display text-base font-bold">2</p>
+                </div>
+
+                <div className="bg-accent/20 rounded-xl px-3 py-2">
+                  <p className="text-[8px] uppercase font-bold text-muted">
+                    Available
+                  </p>
+                  <p className="font-display text-base font-bold">1</p>
+                </div>
+
+                <div className="bg-red-50 rounded-xl px-3 py-2">
+                  <p className="text-[8px] uppercase font-bold text-red-400">
+                    Attention
+                  </p>
+                  <p className="font-display text-base font-bold text-red-500">2</p>
+                </div>
+
+              </div>
+
             </div>
+
+            <div className="overflow-y-auto flex-1 pr-2 divide-y divide-ink/5">
+
+              {deviceData.map((device) => {
+                const style = deviceStatusStyle(device.status);
+
+                return (
+                  <div
+                    key={device.id}
+                    className="grid grid-cols-[0.9fr_1fr_1.1fr_0.8fr_0.7fr] gap-3 items-center py-3"
+                  >
+
+                    <div>
+                      <p className="font-bold text-xs text-ink">
+                        {device.id}
+                      </p>
+
+                      <p className="text-[9px] text-muted mt-0.5">
+                        {device.model}
+                      </p>
+                    </div>
+
+                    <div>
+                      <span
+                        className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[9px] font-bold ${style.badge}`}
+                      >
+                        <span className={`w-1.5 h-1.5 rounded-full ${style.dot}`}></span>
+
+                        {device.status}
+                      </span>
+                    </div>
+
+                    <div>
+                      <p className="text-[10px] font-bold text-ink">
+                        {device.shop}
+                      </p>
+
+                      <p className="text-[9px] text-muted mt-0.5">
+                        {device.line}
+                      </p>
+                    </div>
+
+                    <div>
+                      <p className={`text-[10px] font-bold ${style.text}`}>
+                        {device.battery}%
+                      </p>
+
+                      <div className="w-12 h-1.5 bg-ink/10 rounded-full mt-1 overflow-hidden">
+                        <div
+                          className={`h-full rounded-full ${style.battery}`}
+                          style={{ width: `${device.battery}%` }}
+                        ></div>
+                      </div>
+                    </div>
+
+                    <div className="text-right">
+                      <p className={`text-[10px] font-semibold ${style.text}`}>
+                        {device.lastSync}
+                      </p>
+
+                      <p className="text-[8px] text-muted mt-0.5">
+                        Last sync
+                      </p>
+                    </div>
+
+                  </div>
+                );
+              })}
+
+            </div>
+
           </div>
 
           <div className="bg-white rounded-4xl p-[26px] shadow-[0_2px_12px_rgba(20,20,15,0.04)] border border-ink/5 h-[300px] flex flex-col">

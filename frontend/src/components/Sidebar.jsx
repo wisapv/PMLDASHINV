@@ -5,7 +5,7 @@ import Sparkle from './Sparkle';
 const Sidebar = ({ activeModule, setActiveModule }) => {
   return (
     <div className="fixed left-6 top-[112px] bottom-6 w-[59px] flex items-center justify-center z-40">
-      <div className="w-[59px] bg-white rounded-5xl flex flex-col items-center py-[22px] shadow-[0_8px_24px_rgba(20,20,15,0.07)] max-h-full overflow-auto">
+      <div className="w-[59px] h-[700px] bg-white rounded-5xl flex flex-col items-center py-[22px] shadow-[0_8px_24px_rgba(20,20,15,0.07)] max-h-full overflow-auto">
 
         {/* Logo mark */}
         <div className="w-[34px] h-[34px] bg-ink rounded-xl flex items-center justify-center mb-7 flex-shrink-0">
