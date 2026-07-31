@@ -7,7 +7,7 @@ const { validateRequiredColumns, findDuplicateHeaders, REQUIRED_FIELDS_PART_PROC
 const router = express.Router();
 const upload = multer({ storage: multer.memoryStorage() });
 
-router.post('/part-procurement', upload.single('file'), async (req, res) => {
+async function handlePartProcurementUpload(req, res) {
   try {
     if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
     const batchId = req.body.batchId;
@@ -18,9 +18,6 @@ router.post('/part-procurement', upload.single('file'), async (req, res) => {
 
     const headerRow = xlsx.utils.sheet_to_json(sheet, { header: 1 })[0] || [];
     const duplicates = findDuplicateHeaders(headerRow);
-    if (duplicates.length > 0) {
-      return res.status(400).json({ error: 'Duplicate column headers found', duplicates });
-    }
     const { valid, missing } = validateRequiredColumns(headerRow, REQUIRED_FIELDS_PART_PROCUREMENT);
     if (!valid) return res.status(400).json({ error: 'Missing required columns', missing });
 
@@ -40,7 +37,11 @@ router.post('/part-procurement', upload.single('file'), async (req, res) => {
       await stmt.finalize();
 
       await db.exec('COMMIT');
-      res.json({ message: 'Part Procurement RAW saved to DB successfully', batchId });
+      res.json({
+        message: 'Part Procurement RAW saved to DB successfully',
+        batchId,
+        warnings: duplicates.length > 0 ? { duplicateHeaders: duplicates } : undefined,
+      });
 
     } catch (insertError) {
       await db.exec('ROLLBACK');
@@ -51,6 +52,9 @@ router.post('/part-procurement', upload.single('file'), async (req, res) => {
     console.error("Upload Error:", error);
     res.status(500).json({ error: 'Failed to process Part Procurement' });
   }
-});
+}
+
+router.post('/part-procurement', upload.single('file'), handlePartProcurementUpload);
 
 module.exports = router;
+module.exports.handlePartProcurementUpload = handlePartProcurementUpload;
