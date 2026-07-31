@@ -24,6 +24,7 @@ const ListCreate = ({ activeTab, setUploadTab }) => {
   const [selectedPreviewGroup, setSelectedPreviewGroup] = useState('All');
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [downloadFiles, setDownloadFiles] = useState([]);
+  const [duplicateHeaderWarning, setDuplicateHeaderWarning] = useState('');
 
   const fileInputRef1 = useRef(null);
   const fileInputRef2 = useRef(null);
@@ -34,6 +35,19 @@ const ListCreate = ({ activeTab, setUploadTab }) => {
       fetchHistory();
     }
   }, [activeTab]);
+
+  useEffect(() => {
+    if (!duplicateHeaderWarning) return;
+    const timer = setTimeout(() => setDuplicateHeaderWarning(''), 6000);
+    return () => clearTimeout(timer);
+  }, [duplicateHeaderWarning]);
+
+  const showDuplicateHeaderWarning = (result) => {
+    const duplicates = result?.warnings?.duplicateHeaders;
+    if (duplicates && duplicates.length > 0) {
+      setDuplicateHeaderWarning(`พบชื่อคอลัมน์ซ้ำในไฟล์: ${duplicates.join(', ')} — ระบบใช้ข้อมูลจากคอลัมน์แรกที่เจอเท่านั้น`);
+    }
+  };
 
   const resetUpload = () => {
     setStep('idle');
@@ -83,7 +97,9 @@ const ListCreate = ({ activeTab, setUploadTab }) => {
       setStep('generating');
       const response = await fetch('http://localhost:3000/api/part-list/target-ro', { method: 'POST', body: formData });
       if (response.ok) {
+        const result = await response.json();
         setUploadStatus(prev => ({ ...prev, target: true }));
+        showDuplicateHeaderWarning(result);
         setStep('idle');
         fetchHistory();
       }
@@ -102,7 +118,9 @@ const ListCreate = ({ activeTab, setUploadTab }) => {
       setStep('generating');
       const response = await fetch('http://localhost:3000/api/part-list/part-procurement', { method: 'POST', body: formData });
       if (response.ok) {
+        const result = await response.json();
         setUploadStatus(prev => ({ ...prev, proc: true }));
+        showDuplicateHeaderWarning(result);
         setStep('idle');
         fetchHistory();
       }
@@ -371,6 +389,13 @@ const ListCreate = ({ activeTab, setUploadTab }) => {
               </button>
             </div>
           </div>
+        </div>
+      )}
+
+      {duplicateHeaderWarning && (
+        <div className="fixed bottom-6 right-6 z-[200] max-w-sm bg-ink text-white text-xs font-semibold px-4 py-3 rounded-2xl shadow-2xl flex items-start gap-2 animate-in fade-in slide-in-from-bottom-4 pointer-events-none">
+          <AlertTriangle size={16} className="text-accent flex-shrink-0 mt-0.5" />
+          <span>{duplicateHeaderWarning}</span>
         </div>
       )}
     </div>
