@@ -167,7 +167,7 @@ test('handlePreviewMain: a later call without prefix reuses the previously store
   }
 });
 
-test('handlePreviewMain: a batch that never had a prefix set falls back to SR481D', async () => {
+test('handlePreviewMain: a batch that never had a prefix set falls back to SR481D, and the fallback is recorded into group_prefix_history like any other prefix', async () => {
   const batchId = 'TEST-GP-DEFAULT-' + Date.now();
   await seedBatch(batchId);
   try {
@@ -175,8 +175,13 @@ test('handlePreviewMain: a batch that never had a prefix set falls back to SR481
     await handlePreviewMain({ query: { batchId } }, res);
 
     assert.strictEqual(res.body.data[0]['Group ID*'], 'SR481DA1');
+
+    const db = await connectDB();
+    const row = await db.get('SELECT * FROM group_prefix_history WHERE prefix = ?', 'SR481D');
+    assert.ok(row, 'the untouched default must be recorded into history when actually used for a merge');
   } finally {
     await cleanupBatch(batchId);
+    await cleanupPrefixHistory('SR481D');
   }
 });
 

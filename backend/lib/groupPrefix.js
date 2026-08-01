@@ -33,6 +33,8 @@ async function setStoredGroupPrefix(db, batchId, prefix) {
 // Tracks prefixes for the "recently used" suggestion list only — separate from
 // any batch's own stored group_prefix. Inserts a new row or bumps last_used_at
 // for an existing one, so the list always reflects most-recent-use ordering.
+// Every prefix, including the default, goes through this the same way — there
+// is no pinned/non-deletable entry.
 async function recordGroupPrefixUsage(db, prefix) {
   const now = new Date().toISOString();
   await db.run(
@@ -40,6 +42,7 @@ async function recordGroupPrefixUsage(db, prefix) {
      ON CONFLICT(prefix) DO UPDATE SET last_used_at = excluded.last_used_at`,
     [prefix, now]
   );
+  return { prefix, last_used_at: now };
 }
 
 async function listGroupPrefixHistory(db) {

@@ -42,6 +42,7 @@ const ListCreate = ({ activeTab, setUploadTab }) => {
   const [isNewPrefixModalOpen, setIsNewPrefixModalOpen] = useState(false);
   const [newPrefixInput, setNewPrefixInput] = useState('');
   const [newPrefixModalError, setNewPrefixModalError] = useState('');
+  const [isSavingNewPrefix, setIsSavingNewPrefix] = useState(false);
   const [isEditPrefixModalOpen, setIsEditPrefixModalOpen] = useState(false);
   const [deletePrefixTarget, setDeletePrefixTarget] = useState(null);
   const [isDeletingPrefix, setIsDeletingPrefix] = useState(false);
@@ -134,12 +135,31 @@ const ListCreate = ({ activeTab, setUploadTab }) => {
     setIsNewPrefixModalOpen(true);
   };
 
-  const handleConfirmNewPrefix = () => {
-    const error = validatePrefixInput(newPrefixInput);
-    if (error) { setNewPrefixModalError(error); return; }
-    setGroupPrefix(newPrefixInput);
-    setGroupPrefixError('');
-    setIsNewPrefixModalOpen(false);
+  const handleConfirmNewPrefix = async () => {
+    const clientError = validatePrefixInput(newPrefixInput);
+    if (clientError) { setNewPrefixModalError(clientError); return; }
+
+    setIsSavingNewPrefix(true);
+    try {
+      const response = await fetch('http://localhost:3000/api/part-list/group-prefix-history', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prefix: newPrefixInput }),
+      });
+      const result = await response.json();
+      if (response.ok) {
+        setGroupPrefix(result.prefix);
+        setGroupPrefixError('');
+        setIsNewPrefixModalOpen(false);
+        fetchGroupPrefixHistory();
+      } else {
+        setNewPrefixModalError(result.error || 'Failed to save prefix.');
+      }
+    } catch (err) {
+      setNewPrefixModalError('Server error while saving prefix.');
+    } finally {
+      setIsSavingNewPrefix(false);
+    }
   };
 
   const openEditPrefixModal = async () => {
@@ -576,8 +596,10 @@ const ListCreate = ({ activeTab, setUploadTab }) => {
             )}
 
             <div className="flex justify-end gap-3 mt-6">
-              <button onClick={() => setIsNewPrefixModalOpen(false)} className="px-6 py-2.5 rounded-xl font-bold text-muted hover:bg-[#FAFAF7] transition-colors">Cancel</button>
-              <button onClick={handleConfirmNewPrefix} className="bg-ink text-accent px-6 py-2.5 rounded-xl font-bold hover:scale-105 transition-all shadow-md">Use this prefix</button>
+              <button onClick={() => setIsNewPrefixModalOpen(false)} disabled={isSavingNewPrefix} className="px-6 py-2.5 rounded-xl font-bold text-muted hover:bg-[#FAFAF7] transition-colors disabled:opacity-50">Cancel</button>
+              <button onClick={handleConfirmNewPrefix} disabled={isSavingNewPrefix} className="bg-ink text-accent px-6 py-2.5 rounded-xl font-bold hover:scale-105 transition-all shadow-md disabled:opacity-50">
+                {isSavingNewPrefix ? 'Saving...' : 'Use this prefix'}
+              </button>
             </div>
           </div>
         </div>

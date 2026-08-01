@@ -2,7 +2,7 @@ const test = require('node:test');
 const assert = require('node:assert');
 const { initDB, connectDB } = require('../database');
 const { recordGroupPrefixUsage } = require('../lib/groupPrefix');
-const { handleGetGroupPrefixHistory, handleDeleteGroupPrefixHistory } = require('./groupPrefixHistoryRoute');
+const { handleGetGroupPrefixHistory, handleAddGroupPrefixHistory, handleDeleteGroupPrefixHistory } = require('./groupPrefixHistoryRoute');
 
 function mockRes() {
   return {
@@ -44,6 +44,44 @@ test('handleGetGroupPrefixHistory: returns entries sorted most-recent-first', as
     await cleanupPrefix(older);
     await cleanupPrefix(newer);
   }
+});
+
+test('handleAddGroupPrefixHistory: a valid prefix persists and is retrievable via GET', async () => {
+  const db = await connectDB();
+  const prefix = 'TESTROUTE-ADD-' + Date.now();
+  try {
+    const res = mockRes();
+    await handleAddGroupPrefixHistory({ body: { prefix } }, res);
+
+    assert.strictEqual(res.statusCode, 200);
+    assert.strictEqual(res.body.prefix, prefix);
+    assert.ok(res.body.last_used_at);
+
+    const getRes = mockRes();
+    await handleGetGroupPrefixHistory({}, getRes);
+    assert.ok(getRes.body.some((r) => r.prefix === prefix));
+  } finally {
+    await cleanupPrefix(prefix);
+  }
+});
+
+test('handleAddGroupPrefixHistory: invalid input (each disallowed character, and empty string) is rejected with 400 and nothing is persisted', async () => {
+  const invalidPrefixes = ['', '   ', 'BAD/X', 'BAD\\X', 'BAD:X', 'BAD*X', 'BAD?X', 'BAD"X', 'BAD<X', 'BAD>X', 'BAD|X'];
+  for (const bad of invalidPrefixes) {
+    const res = mockRes();
+    await handleAddGroupPrefixHistory({ body: { prefix: bad } }, res);
+    assert.strictEqual(res.statusCode, 400, `expected 400 for prefix ${JSON.stringify(bad)}`);
+    assert.ok(res.body.error);
+
+    if (bad.trim() !== '') {
+      await cleanupPrefix(bad);
+    }
+  }
+
+  const db = await connectDB();
+  const placeholders = invalidPrefixes.map(() => '?').join(', ');
+  const rows = await db.all(`SELECT * FROM group_prefix_history WHERE prefix IN (${placeholders})`, invalidPrefixes);
+  assert.strictEqual(rows.length, 0);
 });
 
 test('handleDeleteGroupPrefixHistory: deletes an existing entry', async () => {

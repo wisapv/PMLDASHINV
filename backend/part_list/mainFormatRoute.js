@@ -108,11 +108,14 @@ async function handlePreviewMain(req, res) {
       const { valid, error } = validateGroupPrefix(prefix);
       if (!valid) return res.status(400).json({ error });
       await setStoredGroupPrefix(db, batchId, prefix);
-      await recordGroupPrefixUsage(db, prefix);
       groupPrefix = prefix;
     } else {
       groupPrefix = await getStoredGroupPrefix(db, batchId);
     }
+    // Every prefix actually used for a batch — whether explicitly provided or
+    // just the untouched stored/default value — goes into the suggestion
+    // history the same way, including the default itself.
+    await recordGroupPrefixUsage(db, groupPrefix);
 
     const tgRows = await db.all('SELECT data FROM target_ro WHERE batch_id = ?', batchId);
     const ppRows = await db.all('SELECT data FROM part_procurement WHERE batch_id = ?', batchId);
