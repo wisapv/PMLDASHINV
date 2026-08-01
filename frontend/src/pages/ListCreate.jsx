@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import {
   CheckCircle2, FileSpreadsheet, Database, Loader2, Download,
   X, CheckSquare, Square, Merge, History, Plus, Filter,
-  ArrowRight, AlertTriangle, ChevronDown
+  ArrowRight, AlertTriangle, ChevronDown, Pencil
 } from 'lucide-react';
 import HandheldManager from './HandheldManager';
 
@@ -42,6 +42,7 @@ const ListCreate = ({ activeTab, setUploadTab }) => {
   const [isNewPrefixModalOpen, setIsNewPrefixModalOpen] = useState(false);
   const [newPrefixInput, setNewPrefixInput] = useState('');
   const [newPrefixModalError, setNewPrefixModalError] = useState('');
+  const [isEditPrefixModalOpen, setIsEditPrefixModalOpen] = useState(false);
   const [deletePrefixTarget, setDeletePrefixTarget] = useState(null);
   const [isDeletingPrefix, setIsDeletingPrefix] = useState(false);
 
@@ -139,6 +140,16 @@ const ListCreate = ({ activeTab, setUploadTab }) => {
     setGroupPrefix(newPrefixInput);
     setGroupPrefixError('');
     setIsNewPrefixModalOpen(false);
+  };
+
+  const openEditPrefixModal = async () => {
+    await fetchGroupPrefixHistory();
+    setIsEditPrefixModalOpen(true);
+  };
+
+  const closeEditPrefixModal = async () => {
+    setIsEditPrefixModalOpen(false);
+    await fetchGroupPrefixHistory();
   };
 
   const handleConfirmDeletePrefixHistory = async () => {
@@ -275,7 +286,7 @@ const ListCreate = ({ activeTab, setUploadTab }) => {
           </div>
 
           <div className="flex items-center gap-6 border-b border-ink/10 pb-0">
-            <button onClick={() => { setSubTab('new'); if(step !== 'preview') resetUpload(); }} className={`flex items-center gap-2 px-4 py-3 font-bold transition-all border-b-2 ${subTab === 'new' ? 'text-ink border-ink' : 'text-muted border-transparent hover:text-ink hover:border-ink/20'}`}><Plus size={18} /> New Upload</button>
+            <button onClick={() => setSubTab('new')} className={`flex items-center gap-2 px-4 py-3 font-bold transition-all border-b-2 ${subTab === 'new' ? 'text-ink border-ink' : 'text-muted border-transparent hover:text-ink hover:border-ink/20'}`}><Plus size={18} /> New Upload</button>
             <button onClick={() => { setSubTab('history'); fetchHistory(); }} className={`flex items-center gap-2 px-4 py-3 font-bold transition-all border-b-2 ${subTab === 'history' ? 'text-ink border-ink' : 'text-muted border-transparent hover:text-ink hover:border-ink/20'}`}><History size={18} /> Upload History</button>
           </div>
 
@@ -305,25 +316,14 @@ const ListCreate = ({ activeTab, setUploadTab }) => {
                         {isPrefixDropdownOpen && (
                           <div className="absolute z-20 mt-2 w-full bg-white border border-ink/10 rounded-xl shadow-lg overflow-hidden max-h-56 overflow-y-auto">
                             {(groupPrefixHistory.length > 0 ? groupPrefixHistory : [{ prefix: DEFAULT_GROUP_PREFIX, last_used_at: null }]).map((entry) => (
-                              <div key={entry.prefix} className="flex items-center justify-between px-2 hover:bg-accent/10 group">
-                                <button
-                                  type="button"
-                                  onClick={() => handleSelectPrefix(entry.prefix)}
-                                  className={`flex-1 text-left text-sm font-mono px-2 py-2.5 ${entry.prefix === groupPrefix ? 'text-ink font-bold' : 'text-ink/70'}`}
-                                >
-                                  {entry.prefix}
-                                </button>
-                                {groupPrefixHistory.length > 0 && (
-                                  <button
-                                    type="button"
-                                    onClick={(e) => { e.stopPropagation(); setDeletePrefixTarget(entry.prefix); }}
-                                    className="text-muted hover:text-red-500 transition-colors p-1.5 opacity-0 group-hover:opacity-100"
-                                    title="Remove from history"
-                                  >
-                                    <X size={14} />
-                                  </button>
-                                )}
-                              </div>
+                              <button
+                                key={entry.prefix}
+                                type="button"
+                                onClick={() => handleSelectPrefix(entry.prefix)}
+                                className={`w-full text-left text-sm font-mono px-4 py-2.5 hover:bg-accent/10 transition-colors ${entry.prefix === groupPrefix ? 'text-ink font-bold bg-accent/5' : 'text-ink/70'}`}
+                              >
+                                {entry.prefix}
+                              </button>
                             ))}
                           </div>
                         )}
@@ -335,6 +335,14 @@ const ListCreate = ({ activeTab, setUploadTab }) => {
                         className="flex items-center gap-1.5 bg-ink/5 hover:bg-ink/10 text-ink font-bold text-sm px-4 py-2.5 rounded-xl transition-colors whitespace-nowrap"
                       >
                         <Plus size={16} /> New
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={openEditPrefixModal}
+                        className="flex items-center gap-1.5 bg-ink/5 hover:bg-ink/10 text-ink font-bold text-sm px-4 py-2.5 rounded-xl transition-colors whitespace-nowrap"
+                      >
+                        <Pencil size={16} /> Edit
                       </button>
                     </div>
                     {groupPrefixError && (
@@ -570,6 +578,38 @@ const ListCreate = ({ activeTab, setUploadTab }) => {
             <div className="flex justify-end gap-3 mt-6">
               <button onClick={() => setIsNewPrefixModalOpen(false)} className="px-6 py-2.5 rounded-xl font-bold text-muted hover:bg-[#FAFAF7] transition-colors">Cancel</button>
               <button onClick={handleConfirmNewPrefix} className="bg-ink text-accent px-6 py-2.5 rounded-xl font-bold hover:scale-105 transition-all shadow-md">Use this prefix</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {isEditPrefixModalOpen && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/40 backdrop-blur-sm animate-in fade-in">
+          <div className="bg-white rounded-4xl p-8 w-[420px] shadow-2xl animate-in zoom-in-95 relative">
+            <button onClick={closeEditPrefixModal} className="absolute top-6 right-6 text-muted hover:text-ink transition-colors"><X size={20} /></button>
+            <h3 className="font-display text-xl font-bold text-ink mb-2">Edit Group Prefix History</h3>
+            <p className="text-sm text-muted mb-6">Remove prefixes you no longer need. This only affects the suggestion list — it never changes any batch's already-stored prefix or past exports.</p>
+
+            <div className="flex flex-col gap-1 max-h-[300px] overflow-y-auto mb-6">
+              {groupPrefixHistory.length > 0 ? groupPrefixHistory.map((entry) => (
+                <div key={entry.prefix} className="flex items-center justify-between px-4 py-2.5 rounded-xl hover:bg-[#FAFAF7] transition-colors">
+                  <span className="text-sm font-mono text-ink">{entry.prefix}</span>
+                  <button
+                    type="button"
+                    onClick={() => setDeletePrefixTarget(entry.prefix)}
+                    className="text-muted hover:text-red-500 transition-colors p-1.5"
+                    title="Remove from history"
+                  >
+                    <X size={16} />
+                  </button>
+                </div>
+              )) : (
+                <p className="text-sm text-muted text-center py-6">No saved prefixes yet.</p>
+              )}
+            </div>
+
+            <div className="flex justify-end">
+              <button onClick={closeEditPrefixModal} className="bg-ink text-accent px-6 py-2.5 rounded-xl font-bold hover:scale-105 transition-all shadow-md">Done</button>
             </div>
           </div>
         </div>
