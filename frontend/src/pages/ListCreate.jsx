@@ -298,8 +298,7 @@ const ListCreate = ({ activeTab, setUploadTab }) => {
   return (
     <div className="flex flex-col gap-6 w-full animate-in fade-in duration-500 pb-10">
 
-      {activeTab === 'TBOS' ? (
-        <div className="flex flex-col gap-8">
+      <div className={activeTab === 'TBOS' ? 'flex flex-col gap-8' : 'hidden'}>
           <div className="flex flex-col gap-2">
             <h2 className="font-display text-2xl font-bold text-ink tracking-tight">Generate Part List (TBOS)</h2>
             <p className="text-sm text-muted">Upload and manage your inventory data batches.</p>
@@ -534,14 +533,15 @@ const ListCreate = ({ activeTab, setUploadTab }) => {
               </div>
             </div>
           )}
-        </div>
-      ) : (
+      </div>
+
+      <div className={activeTab === 'TBOS' ? 'hidden' : ''}>
         <HandheldManager
           currentBatchId={currentBatchId}
           previewData={previewData}
           setUploadTab={setUploadTab}
         />
-      )}
+      </div>
 
       {isModalOpen && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/40 backdrop-blur-sm animate-in fade-in">

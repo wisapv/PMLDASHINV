@@ -236,32 +236,32 @@ const HandheldManager = ({ currentBatchId, previewData, setUploadTab }) => {
               </div>
 
               {showPicManager && (
-                <div className="bg-ink p-6 rounded-2xl border border-white/10 animate-in zoom-in-95">
-                  <h3 className="font-bold text-white mb-4 flex items-center gap-2"><GripVertical size={20} className="text-accent"/> Drag & Drop Address Groups</h3>
-                  <div className="flex gap-4 overflow-x-auto pb-4 snap-x">
+                <div className="bg-white p-6 rounded-2xl border border-ink/5 shadow-[0_2px_12px_rgba(20,20,15,0.04)] animate-in zoom-in-95">
+                  <h3 className="font-bold text-ink mb-4 flex items-center gap-2"><GripVertical size={20} className="text-accent"/> Drag & Drop Address Groups</h3>
+                  <div className="flex gap-4 overflow-x-auto p-2 snap-x">
                     {Object.entries(picGroups).map(([pic, addrMap]) => (
                       <div
                         key={pic}
                         onDragOver={(e) => handleDragOver(e, pic)}
                         onDragLeave={handleDragLeave}
                         onDrop={(e) => handleDrop(e, pic)}
-                        className={`min-w-[200px] bg-white/10 rounded-xl p-4 shadow-sm border-2 transition-all snap-start
-                          ${dragOverPic === pic ? 'border-accent bg-white/20 scale-105' : 'border-transparent'}`}
+                        className={`min-w-[200px] bg-[#FAFAF7] rounded-xl p-4 shadow-sm border-2 transition-all snap-start
+                          ${dragOverPic === pic ? 'border-accent bg-accent/10 scale-105' : 'border-transparent'}`}
                       >
                         <div className="flex justify-center items-center mb-4 py-2 rounded-xl bg-accent shadow-lg">
                           <h4 className="font-bold text-ink text-xl">{pic}</h4>
                         </div>
 
-                        <div className="flex flex-col gap-2 max-h-[250px] overflow-y-auto pr-1">
+                        <div className="flex flex-col gap-2 max-h-[250px] overflow-y-auto p-1">
                           {Object.entries(addrMap).map(([shortAddr, count]) => (
                             <div
                               key={shortAddr}
                               draggable
                               onDragStart={(e) => handleDragStart(e, shortAddr, pic)}
-                              className="bg-white rounded-2xl p-2.5 flex justify-between items-center cursor-grab active:cursor-grabbing hover:ring-2 hover:ring-accent transition-all group shadow-sm"
+                              className="bg-ink rounded-2xl p-2.5 flex justify-between items-center cursor-grab active:cursor-grabbing hover:ring-2 hover:ring-accent transition-all group shadow-sm"
                             >
-                              <span className="font-mono text-sm font-bold text-ink">{shortAddr}</span>
-                              <span className="text-[10px] bg-ink/5 px-2 py-0.5 rounded-full text-muted font-bold">{count} items</span>
+                              <span className="font-mono text-sm font-bold text-white">{shortAddr}</span>
+                              <span className="text-[10px] bg-white/10 px-2 py-0.5 rounded-full text-white/70 font-bold">{count} items</span>
                             </div>
                           ))}
                         </div>
@@ -299,8 +299,8 @@ const HandheldManager = ({ currentBatchId, previewData, setUploadTab }) => {
                           <td className="px-4 py-3 text-ink">{r['Part no.']}</td>
                           <td className="px-4 py-3 truncate max-w-[150px] text-ink">{r['Part name']}</td>
                           <td className="px-4 py-3 text-blue-700 font-medium bg-blue-50/20">{r.Addr}</td>
-                          <td className="px-4 py-3 font-bold text-ink bg-accent/10">
-                            <span className="bg-white border border-accent/40 px-2 py-0.5 rounded shadow-sm">{r.PIC}</span>
+                          <td className="px-4 py-3 font-bold text-ink">
+                            <span className="inline-flex items-center justify-center bg-accent text-ink px-2.5 py-1 rounded-full text-xs font-bold shadow-sm">{r.PIC}</span>
                           </td>
                         </tr>
                       ))}
