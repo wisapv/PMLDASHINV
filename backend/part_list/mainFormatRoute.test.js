@@ -4,6 +4,7 @@ const fs = require('fs');
 const path = require('path');
 const xlsx = require('xlsx');
 const { initDB, connectDB } = require('../database');
+const { initSocketHub, EVENTS } = require('../lib/socketHub');
 const { handlePreviewMain, handleDownloadMain } = require('./mainFormatRoute');
 const { handleProcessAssignAddr } = require('../handheld_part_list/assignAddrRoute');
 
@@ -240,5 +241,42 @@ test('preview-main, download-main, and process-assign-addr all use the same stor
   } finally {
     await cleanupBatch(batchId);
     await cleanupPrefixHistory('CROSSPFX');
+  }
+});
+
+test('handlePreviewMain: emits batch:mergeUpdated on a real merge (prefix provided), but not on a passive history re-view (no prefix)', async () => {
+  const batchId = 'TEST-GP-EMIT-' + Date.now();
+  await seedBatch(batchId);
+  const emitted = [];
+  initSocketHub({ emit: (name, payload) => emitted.push({ name, payload }) });
+
+  try {
+    await handlePreviewMain({ query: { batchId, prefix: 'EMITPFX' } }, mockRes());
+    assert.ok(emitted.some((e) => e.name === EVENTS.BATCH_MERGE_UPDATED && e.payload.batchId === batchId));
+
+    emitted.length = 0;
+    await handlePreviewMain({ query: { batchId } }, mockRes());
+    assert.ok(!emitted.some((e) => e.name === EVENTS.BATCH_MERGE_UPDATED), 'a passive re-view without a prefix must not broadcast');
+  } finally {
+    await cleanupBatch(batchId);
+    await cleanupPrefixHistory('EMITPFX');
+  }
+});
+
+test('handleProcessAssignAddr: emits handheld:updated on success', async () => {
+  const batchId = 'TEST-GP-HANDHELDEMIT-' + Date.now();
+  await seedBatch(batchId);
+  const emitted = [];
+  initSocketHub({ emit: (name, payload) => emitted.push({ name, payload }) });
+
+  try {
+    const addrHeaders = ['T/C TO (UNL)', 'DOCK', 'PART #', 'Kanban Print Address', 'Lineside Address', 'PART DESC'];
+    const addrRow = ['20991231', 'ZZ', '123456789012', 'WH01', '', 'TEST PART'];
+    const addrBuffer = bufferFromAoa([addrHeaders, addrRow]);
+
+    await handleProcessAssignAddr({ file: { buffer: addrBuffer }, body: { batchId } }, mockRes());
+    assert.ok(emitted.some((e) => e.name === EVENTS.HANDHELD_UPDATED && e.payload.batchId === batchId));
+  } finally {
+    await cleanupBatch(batchId);
   }
 });

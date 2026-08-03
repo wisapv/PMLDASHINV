@@ -7,6 +7,7 @@ const archiver = require('archiver');
 const { buildPpIndex, cleanTargetRow, computeShop } = require('../lib/partMatching');
 const { buildMatchKey } = require('../lib/keyUtils');
 const { validateGroupPrefix, getStoredGroupPrefix, setStoredGroupPrefix, recordGroupPrefixUsage } = require('../lib/groupPrefix');
+const { emitEvent, EVENTS } = require('../lib/socketHub');
 
 const router = express.Router();
 
@@ -103,8 +104,13 @@ async function handlePreviewMain(req, res) {
 
     const db = await connectDB();
 
+    // Only an explicit prefix represents a real Merge action on this batch —
+    // the no-prefix fallback is also used to passively re-view a (possibly
+    // unrelated, non-active) batch from history, which must never broadcast.
+    const isRealMergeAction = prefix !== undefined && prefix !== null;
+
     let groupPrefix;
-    if (prefix !== undefined && prefix !== null) {
+    if (isRealMergeAction) {
       const { valid, error } = validateGroupPrefix(prefix);
       if (!valid) return res.status(400).json({ error });
       await setStoredGroupPrefix(db, batchId, prefix);
@@ -188,6 +194,7 @@ async function handlePreviewMain(req, res) {
         }
       }
     }
+    if (isRealMergeAction) emitEvent(EVENTS.BATCH_MERGE_UPDATED, { batchId });
     // 🔴 ส่งข้อมูล remind กลับไปพร้อมกัน
     res.json({ message: 'Success', count: previewData.length, data: previewData, remind: remindData, duplicateKeys });
   } catch (error) { res.status(500).json({ error: 'Failed' }); }

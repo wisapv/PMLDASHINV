@@ -2,6 +2,7 @@ const test = require('node:test');
 const assert = require('node:assert');
 const xlsx = require('xlsx');
 const { initDB, connectDB } = require('../database');
+const { initSocketHub, EVENTS } = require('../lib/socketHub');
 const { handlePartProcurementUpload } = require('./partProcRoute');
 
 function bufferFromAoa(aoa) {
@@ -111,4 +112,19 @@ test('handlePartProcurementUpload: regression — missing required column is sti
   const db = await connectDB();
   const rows = await db.all('SELECT data FROM part_procurement WHERE batch_id = ?', batchId);
   assert.strictEqual(rows.length, 0);
+});
+
+test('handlePartProcurementUpload: emits batch:uploadUpdated on success', async () => {
+  const batchId = 'TEST-PP-EMIT-' + Date.now();
+  const buffer = bufferFromAoa([FULL_HEADERS, FULL_DATA_ROW]);
+
+  const emitted = [];
+  initSocketHub({ emit: (name, payload) => emitted.push({ name, payload }) });
+
+  try {
+    await handlePartProcurementUpload(mockReq(buffer, batchId), mockRes());
+    assert.ok(emitted.some((e) => e.name === EVENTS.BATCH_UPLOAD_UPDATED && e.payload.batchId === batchId));
+  } finally {
+    await cleanupBatch(batchId);
+  }
 });

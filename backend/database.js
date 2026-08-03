@@ -12,7 +12,13 @@ async function connectDB() {
     fs.mkdirSync(dbFolder);
     console.log("Created 'database' folder automatically.");
   }
-  return open({ filename: dbPath, driver: sqlite3.Database });
+  const db = await open({ filename: dbPath, driver: sqlite3.Database });
+  // Every route (and every test) opens its own connection against the same
+  // file; without this, concurrent writers (e.g. two people uploading at
+  // once, or setActiveBatch's table-wide UPDATE racing another insert) can
+  // fail immediately with SQLITE_BUSY instead of just waiting briefly.
+  await db.exec('PRAGMA busy_timeout = 5000');
+  return db;
 }
 
 async function initDB() {
@@ -45,6 +51,9 @@ async function initDB() {
   const uploadBatchesColumns = await db.all(`PRAGMA table_info(upload_batches)`);
   if (!uploadBatchesColumns.some((col) => col.name === 'group_prefix')) {
     await db.exec(`ALTER TABLE upload_batches ADD COLUMN group_prefix TEXT`);
+  }
+  if (!uploadBatchesColumns.some((col) => col.name === 'is_active')) {
+    await db.exec(`ALTER TABLE upload_batches ADD COLUMN is_active INTEGER NOT NULL DEFAULT 0`);
   }
 
   console.log("SQLite Database initialized with Batch System.");

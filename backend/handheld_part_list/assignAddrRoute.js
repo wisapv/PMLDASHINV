@@ -8,6 +8,7 @@ const { buildMatchKey } = require('../lib/keyUtils');
 const { parseExcelDate } = require('../lib/dateUtils');
 const { getField } = require('../lib/fieldAliases');
 const { getStoredGroupPrefix } = require('../lib/groupPrefix');
+const { emitEvent, EVENTS } = require('../lib/socketHub');
 const router = express.Router();
 const upload = multer({ storage: multer.memoryStorage() });
 
@@ -222,6 +223,7 @@ async function handleProcessAssignAddr(req, res) {
             }
         });
 
+        emitEvent(EVENTS.HANDHELD_UPDATED, { batchId });
         res.json({ success: true, data: finalData, hold: holdData, remind: remindData, duplicateKeys });
 
     } catch (error) {

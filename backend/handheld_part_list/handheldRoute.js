@@ -3,9 +3,10 @@ const { connectDB } = require('../database');
 const { buildPpIndex, cleanTargetRow, computeShop, dedupeDockEqualsSupplierRows } = require('../lib/partMatching');
 const { buildMatchKey } = require('../lib/keyUtils');
 const { getField } = require('../lib/fieldAliases');
+const { emitEvent, EVENTS } = require('../lib/socketHub');
 const router = express.Router();
 
-router.get('/preview-handheld', async (req, res) => {
+async function handlePreviewHandheld(req, res) {
   try {
     const { batchId } = req.query;
     if (!batchId) return res.status(400).json({ error: 'Missing batchId' });
@@ -56,10 +57,14 @@ router.get('/preview-handheld', async (req, res) => {
       }
     }
 
+    emitEvent(EVENTS.HANDHELD_UPDATED, { batchId });
     res.json({ message: 'Success', count: previewData.length, data: previewData, duplicateKeys });
   } catch (error) {
     res.status(500).json({ error: 'Failed to generate handheld preview' });
   }
-});
+}
+
+router.get('/preview-handheld', handlePreviewHandheld);
 
 module.exports = router;
+module.exports.handlePreviewHandheld = handlePreviewHandheld;

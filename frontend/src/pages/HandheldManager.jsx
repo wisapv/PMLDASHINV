@@ -1,10 +1,11 @@
-import React, { useState, useRef, useMemo } from 'react';
+import React, { useState, useRef, useMemo, useEffect, useCallback } from 'react';
 import {
   Database, Loader2, CheckCircle2, MapPin,
-  AlertCircle, AlertTriangle, GripVertical, Settings2, Download
+  AlertCircle, AlertTriangle, GripVertical, Settings2, Download, RefreshCw
 } from 'lucide-react';
+import { SOCKET_EVENTS, API_BASE } from '../hooks/useActiveBatch';
 
-const HandheldManager = ({ currentBatchId, previewData, setUploadTab }) => {
+const HandheldManager = ({ currentBatchId, previewData, setUploadTab, subscribeToEvent }) => {
   const [step, setStep] = useState('idle');
   const [handheldPreview, setHandheldPreview] = useState(null);
   const [addrFileUploaded, setAddrFileUploaded] = useState(false);
@@ -15,17 +16,36 @@ const HandheldManager = ({ currentBatchId, previewData, setUploadTab }) => {
 
   const [showPicManager, setShowPicManager] = useState(false);
   const [dragOverPic, setDragOverPic] = useState(null);
+  const [hasHandheldUpdate, setHasHandheldUpdate] = useState(false);
   const fileInputRef = useRef(null);
 
-  const handleLoadHandheldPreview = async () => {
+  const handleLoadHandheldPreview = useCallback(async () => {
     try {
       setStep('generating');
-      const res = await fetch(`http://localhost:3000/api/handheld/preview-handheld?batchId=${currentBatchId}`);
+      const res = await fetch(`${API_BASE}/api/handheld/preview-handheld?batchId=${currentBatchId}`);
       const result = await res.json();
-      if (res.ok) { setHandheldPreview(result.data); setStep('idle'); }
+      if (res.ok) { setHandheldPreview(result.data); setHasHandheldUpdate(false); setStep('idle'); }
       else { alert("Failed to generate Handheld format"); setStep('idle'); }
-    } catch(e) { alert("Server Error"); setStep('idle'); }
-  };
+    } catch(err) { alert("Server Error"); setStep('idle'); }
+  }, [currentBatchId]);
+
+  // Same-batch live updates. The base preview (a plain GET) can be safely
+  // auto-refreshed, but only while the PIC Manager is closed — reassignments
+  // made there are local-only (never sent to the backend, see handleDrop
+  // below), so overwriting state while it's open risks silently discarding
+  // work in progress. The address/PIC results (finalHandheldData) can't be
+  // silently refetched at all — producing them requires re-uploading the
+  // address file, there is no GET for "the last result" — so those cases
+  // just surface a non-blocking banner instead of an automatic overwrite.
+  useEffect(() => {
+    const unsubscribe = subscribeToEvent(SOCKET_EVENTS.HANDHELD_UPDATED, (payload) => {
+      if (payload.batchId !== currentBatchId) return;
+      if (showPicManager) { setHasHandheldUpdate(true); return; }
+      if (handheldPreview) { handleLoadHandheldPreview(); return; }
+      setHasHandheldUpdate(true);
+    });
+    return unsubscribe;
+  }, [currentBatchId, showPicManager, handheldPreview, subscribeToEvent, handleLoadHandheldPreview]);
 
   const handleUploadAddr = async (e) => {
     const file = e.target.files[0];
@@ -36,13 +56,14 @@ const HandheldManager = ({ currentBatchId, previewData, setUploadTab }) => {
 
     try {
         setStep('generating');
-        const res = await fetch('http://localhost:3000/api/handheld-assign/process-assign-addr', { method: 'POST', body: formData });
+        const res = await fetch(`${API_BASE}/api/handheld-assign/process-assign-addr`, { method: 'POST', body: formData });
         const result = await res.json();
         if (result.success) {
             setFinalHandheldData(result.data);
             setHoldData(result.hold);
             setRemindData(result.remind);
             setAddrFileUploaded(true);
+            setHasHandheldUpdate(false);
             setStep('idle');
         } else { alert("Process Failed"); setStep('idle'); }
     } catch (err) { alert("Upload Failed"); setStep('idle'); }
@@ -53,7 +74,7 @@ const HandheldManager = ({ currentBatchId, previewData, setUploadTab }) => {
     if (!finalHandheldData || finalHandheldData.length === 0) return;
 
     try {
-      const response = await fetch('http://localhost:3000/api/handheld-assign/export-excel', {
+      const response = await fetch(`${API_BASE}/api/handheld-assign/export-excel`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -134,6 +155,15 @@ const HandheldManager = ({ currentBatchId, previewData, setUploadTab }) => {
 
   return (
     <div className="flex flex-col gap-8 w-full animate-in fade-in pb-10">
+
+      {hasHandheldUpdate && (
+        <div className="bg-accent/10 border border-accent/30 rounded-2xl px-6 py-3 flex items-center justify-between gap-4 animate-in fade-in">
+          <span className="text-sm font-bold text-ink">Handheld data for this batch was updated by another user.</span>
+          <button onClick={handleLoadHandheldPreview} className="bg-ink text-accent px-4 py-2 rounded-xl font-bold text-sm hover:opacity-90 transition-colors flex items-center gap-2 whitespace-nowrap">
+            <RefreshCw size={14} /> Refresh Base Preview
+          </button>
+        </div>
+      )}
 
       {/* 1. Base Data Preview */}
       <div className="bg-white border border-ink/5 shadow-[0_2px_12px_rgba(20,20,15,0.04)] rounded-4xl p-10 flex flex-col">

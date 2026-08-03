@@ -2,6 +2,7 @@ const test = require('node:test');
 const assert = require('node:assert');
 const xlsx = require('xlsx');
 const { initDB, connectDB } = require('../database');
+const { initSocketHub, EVENTS } = require('../lib/socketHub');
 const { handleTargetRoUpload } = require('./targetRoRoute');
 
 function bufferFromAoa(aoa) {
@@ -102,4 +103,21 @@ test('handleTargetRoUpload: regression — missing required column is still reje
   const db = await connectDB();
   const rows = await db.all('SELECT data FROM target_ro WHERE batch_id = ?', batchId);
   assert.strictEqual(rows.length, 0);
+});
+
+test('handleTargetRoUpload: emits batch:uploadUpdated on success', async () => {
+  const batchId = 'TEST-TG-EMIT-' + Date.now();
+  const headers = ['Part No 12 Digits', 'Supplier', 'Dock IH routing', 'Source'];
+  const dataRow = ['123456789012', 'ABC', 'SW', '1'];
+  const buffer = bufferFromAoa([headers, dataRow]);
+
+  const emitted = [];
+  initSocketHub({ emit: (name, payload) => emitted.push({ name, payload }) });
+
+  try {
+    await handleTargetRoUpload(mockReq(buffer, batchId), mockRes());
+    assert.ok(emitted.some((e) => e.name === EVENTS.BATCH_UPLOAD_UPDATED && e.payload.batchId === batchId));
+  } finally {
+    await cleanupBatch(batchId);
+  }
 });

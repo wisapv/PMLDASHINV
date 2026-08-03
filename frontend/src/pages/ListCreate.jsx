@@ -1,15 +1,11 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
   CheckCircle2, FileSpreadsheet, Database, Loader2, Download,
   X, CheckSquare, Square, Merge, History, Plus, Filter,
-  ArrowRight, AlertTriangle, ChevronDown, Pencil
+  ArrowRight, AlertTriangle, ChevronDown, Pencil, RefreshCw, Users
 } from 'lucide-react';
 import HandheldManager from './HandheldManager';
-
-const generateBatchId = () => {
-  const d = new Date();
-  return `B-${d.getFullYear()}${String(d.getMonth()+1).padStart(2,'0')}${String(d.getDate()).padStart(2,'0')}-${String(d.getHours()).padStart(2,'0')}${String(d.getMinutes()).padStart(2,'0')}${String(d.getSeconds()).padStart(2,'0')}`;
-};
+import { useActiveBatch, SOCKET_EVENTS, API_BASE } from '../hooks/useActiveBatch';
 
 const DEFAULT_GROUP_PREFIX = 'SR481D';
 const INVALID_PREFIX_CHARS = /[/\\:*?"<>|]/;
@@ -22,8 +18,14 @@ function validatePrefixInput(value) {
 }
 
 const ListCreate = ({ activeTab, setUploadTab }) => {
+  const { activeBatchId, hasLoadedActiveBatch, isSocketConnected, subscribeToEvent, startNewBatch } = useActiveBatch();
+
   const [subTab, setSubTab] = useState('new');
+  // Normally mirrors activeBatchId (the shared batch), but "Preview / Use"
+  // in Upload History temporarily diverges it to browse a past batch
+  // read-only — see isViewingHistoricalBatch below.
   const [currentBatchId, setCurrentBatchId] = useState('');
+  const [isViewingHistoricalBatch, setIsViewingHistoricalBatch] = useState(false);
   const [historyBatches, setHistoryBatches] = useState([]);
   const [step, setStep] = useState('idle');
   const [uploadStatus, setUploadStatus] = useState({ target: false, proc: false });
@@ -51,10 +53,88 @@ const ListCreate = ({ activeTab, setUploadTab }) => {
   const fileInputRef2 = useRef(null);
   const prefixDropdownRef = useRef(null);
   const hasInitializedPrefixRef = useRef(false);
+  const prevActiveBatchIdRef = useRef(undefined);
+
+  const fetchGroupPrefixHistory = useCallback(async () => {
+    try {
+      const response = await fetch(`${API_BASE}/api/part-list/group-prefix-history`);
+      if (response.ok) {
+        const data = await response.json();
+        setGroupPrefixHistory(data);
+        return data;
+      }
+    } catch (err) { console.error("Failed to fetch group prefix history", err); }
+    return [];
+  }, []);
+
+  // Reflects a genuinely new active batch: clears every batch-scoped piece of
+  // local view state, but deliberately leaves alone anything the "must not
+  // disrupt in-progress local UI state" rule covers — no open modal is
+  // touched here, subTab isn't forced, etc.
+  const resetViewForNewBatch = useCallback(async () => {
+    setStep('idle');
+    setUploadStatus({ target: false, proc: false });
+    setPreviewData([]);
+    setTbosRemindData([]);
+    setSelectedPreviewGroup('All');
+    setDownloadFiles([]);
+    setGroupPrefixError('');
+    const history = await fetchGroupPrefixHistory();
+    setGroupPrefix(history[0]?.prefix || DEFAULT_GROUP_PREFIX);
+  }, [fetchGroupPrefixHistory]);
+
+  const fetchHistory = useCallback(async (batchIdForStatus = currentBatchId) => {
+    try {
+      const response = await fetch(`${API_BASE}/api/batches/list`);
+      if (response.ok) {
+        const data = await response.json();
+        setHistoryBatches(data);
+        if (batchIdForStatus) {
+          const row = data.find((b) => b.batch_id === batchIdForStatus);
+          if (row) setUploadStatus({ target: row.tg_count > 0, proc: row.pp_count > 0 });
+        }
+      }
+    } catch (err) { console.error("Failed to fetch history", err); }
+  }, [currentBatchId]);
+
+  // Populates previewData from whatever's already on the server for this
+  // batch — without this, a second user landing on the shared active batch
+  // (or the Handheld tab, which gates on previewData) would see nothing
+  // even though a teammate already merged it. Safe to call unconditionally:
+  // returns an empty result harmlessly if nothing's been merged yet, and
+  // only ever runs at batch-assignment boundaries, never mid-interaction.
+  const refreshPreviewDataSilently = useCallback(async (batchId) => {
+    if (!batchId) return;
+    try {
+      const response = await fetch(`${API_BASE}/api/part-list/preview-main?batchId=${batchId}`);
+      const result = await response.json();
+      if (response.ok && result.data && result.data.length > 0) {
+        setPreviewData(result.data);
+        setTbosRemindData(result.remind || []);
+        const uniqueGroups = [...new Set(result.data.map((item) => item['Group ID*']))].filter(Boolean);
+        setDownloadFiles(uniqueGroups.map((grp, index) => ({ id: `grp_${index}`, label: `Group: ${grp}`, value: grp, isChecked: true })));
+      }
+    } catch (err) { console.error("Failed to refresh preview data", err); }
+  }, []);
+
+  // Keep currentBatchId in step with the shared active batch, except while
+  // deliberately browsing a past batch from History. On a genuine change
+  // (not the initial load) reset the local view — this is what makes
+  // "Start New Batch" (or another user starting one) take effect here.
+  useEffect(() => {
+    if (!hasLoadedActiveBatch || isViewingHistoricalBatch) return;
+
+    const isFirstAssignment = prevActiveBatchIdRef.current === undefined;
+    const changed = !isFirstAssignment && prevActiveBatchIdRef.current !== activeBatchId;
+    prevActiveBatchIdRef.current = activeBatchId;
+
+    setCurrentBatchId(activeBatchId || '');
+    if (changed) resetViewForNewBatch();
+    refreshPreviewDataSilently(activeBatchId);
+  }, [activeBatchId, hasLoadedActiveBatch, isViewingHistoricalBatch, resetViewForNewBatch, refreshPreviewDataSilently]);
 
   useEffect(() => {
-    if (activeTab === 'TBOS') {
-      setCurrentBatchId(prev => prev ? prev : generateBatchId());
+    if (activeTab === 'TBOS' && currentBatchId) {
       fetchHistory();
       fetchGroupPrefixHistory().then((history) => {
         if (!hasInitializedPrefixRef.current) {
@@ -63,7 +143,28 @@ const ListCreate = ({ activeTab, setUploadTab }) => {
         }
       });
     }
-  }, [activeTab]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeTab, currentBatchId]);
+
+  // Cross-session live updates for the shared active batch. Deliberately
+  // conservative: only refreshes read-only/background data — the history
+  // list, upload-status flags derived from it, and the underlying preview
+  // data (silently; it doesn't force step to 'preview' or touch the
+  // download-selection UI beyond repopulating it from fresh data). Never
+  // touches open modals, typed-but-unsubmitted prefix input, or which
+  // sub-tab/step is currently showing.
+  useEffect(() => {
+    const unsubUpload = subscribeToEvent(SOCKET_EVENTS.BATCH_UPLOAD_UPDATED, (payload) => {
+      if (payload.batchId !== currentBatchId) return;
+      fetchHistory(currentBatchId);
+    });
+    const unsubMerge = subscribeToEvent(SOCKET_EVENTS.BATCH_MERGE_UPDATED, (payload) => {
+      if (payload.batchId !== currentBatchId) return;
+      refreshPreviewDataSilently(currentBatchId);
+    });
+    return () => { unsubUpload(); unsubMerge(); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentBatchId, subscribeToEvent, refreshPreviewDataSilently]);
 
   useEffect(() => {
     const handleClickOutside = (e) => {
@@ -88,39 +189,28 @@ const ListCreate = ({ activeTab, setUploadTab }) => {
     }
   };
 
+  // "Reset" — returns to the idle upload view for the SAME shared batch (no
+  // new batch is created; that's only ever done via "Start New Batch"). Also
+  // the way out of a historical-batch preview, back to the live batch.
   const resetUpload = async () => {
+    setIsViewingHistoricalBatch(false);
+    setCurrentBatchId(activeBatchId || '');
     setStep('idle');
-    setUploadStatus({ target: false, proc: false });
-    setCurrentBatchId(generateBatchId());
     setPreviewData([]);
     setTbosRemindData([]);
     setSelectedPreviewGroup('All');
     setDownloadFiles([]);
     setGroupPrefixError('');
-    const history = await fetchGroupPrefixHistory();
-    setGroupPrefix(history[0]?.prefix || DEFAULT_GROUP_PREFIX);
+    fetchHistory(activeBatchId);
   };
 
-  const fetchHistory = async () => {
+  const handleStartNewBatchClick = async () => {
+    if (!window.confirm('This will start a new shared batch for everyone — continue?')) return;
     try {
-      const response = await fetch('http://localhost:3000/api/batches/list');
-      if (response.ok) {
-        const data = await response.json();
-        setHistoryBatches(data);
-      }
-    } catch (err) { console.error("Failed to fetch history", err); }
-  };
-
-  const fetchGroupPrefixHistory = async () => {
-    try {
-      const response = await fetch('http://localhost:3000/api/part-list/group-prefix-history');
-      if (response.ok) {
-        const data = await response.json();
-        setGroupPrefixHistory(data);
-        return data;
-      }
-    } catch (err) { console.error("Failed to fetch group prefix history", err); }
-    return [];
+      await startNewBatch();
+    } catch (err) {
+      alert('Failed to start a new batch.');
+    }
   };
 
   const handleSelectPrefix = (prefix) => {
@@ -141,7 +231,7 @@ const ListCreate = ({ activeTab, setUploadTab }) => {
 
     setIsSavingNewPrefix(true);
     try {
-      const response = await fetch('http://localhost:3000/api/part-list/group-prefix-history', {
+      const response = await fetch(`${API_BASE}/api/part-list/group-prefix-history`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ prefix: newPrefixInput }),
@@ -177,7 +267,7 @@ const ListCreate = ({ activeTab, setUploadTab }) => {
     const target = deletePrefixTarget;
     setIsDeletingPrefix(true);
     try {
-      const response = await fetch(`http://localhost:3000/api/part-list/group-prefix-history/${encodeURIComponent(target)}`, { method: 'DELETE' });
+      const response = await fetch(`${API_BASE}/api/part-list/group-prefix-history/${encodeURIComponent(target)}`, { method: 'DELETE' });
       if (response.ok) {
         const updatedHistory = await fetchGroupPrefixHistory();
         if (groupPrefix === target) {
@@ -196,13 +286,16 @@ const ListCreate = ({ activeTab, setUploadTab }) => {
   const handleDeleteBatch = async (batchId) => {
     if(!window.confirm(`Are you sure you want to delete Batch: ${batchId}?`)) return;
     try {
-      const response = await fetch(`http://localhost:3000/api/batches/${batchId}`, { method: 'DELETE' });
+      const response = await fetch(`${API_BASE}/api/batches/${batchId}`, { method: 'DELETE' });
       if (response.ok) fetchHistory();
       else alert("Failed to delete batch.");
     } catch (err) { alert("Failed to connect to server."); }
   };
 
   const handlePreviewHistory = (batchId) => {
+    // Read-only browsing of a past (possibly no-longer-active) batch — must
+    // not be treated as, or disrupted by, the shared active batch changing.
+    setIsViewingHistoricalBatch(true);
     setCurrentBatchId(batchId);
     setUploadStatus({ target: true, proc: true });
     setSubTab('new');
@@ -221,7 +314,7 @@ const ListCreate = ({ activeTab, setUploadTab }) => {
     formData.append('batchId', currentBatchId);
     try {
       setStep('generating');
-      const response = await fetch('http://localhost:3000/api/part-list/target-ro', { method: 'POST', body: formData });
+      const response = await fetch(`${API_BASE}/api/part-list/target-ro`, { method: 'POST', body: formData });
       if (response.ok) {
         const result = await response.json();
         setUploadStatus(prev => ({ ...prev, target: true }));
@@ -242,7 +335,7 @@ const ListCreate = ({ activeTab, setUploadTab }) => {
     formData.append('batchId', currentBatchId);
     try {
       setStep('generating');
-      const response = await fetch('http://localhost:3000/api/part-list/part-procurement', { method: 'POST', body: formData });
+      const response = await fetch(`${API_BASE}/api/part-list/part-procurement`, { method: 'POST', body: formData });
       if (response.ok) {
         const result = await response.json();
         setUploadStatus(prev => ({ ...prev, proc: true }));
@@ -261,7 +354,7 @@ const ListCreate = ({ activeTab, setUploadTab }) => {
       setGroupPrefixError('');
       const params = new URLSearchParams({ batchId: batchIdToMerge });
       if (includePrefix) params.set('prefix', groupPrefix);
-      const response = await fetch(`http://localhost:3000/api/part-list/preview-main?${params.toString()}`);
+      const response = await fetch(`${API_BASE}/api/part-list/preview-main?${params.toString()}`);
       const result = await response.json();
       if (response.ok) {
         setPreviewData(result.data);
@@ -287,7 +380,7 @@ const ListCreate = ({ activeTab, setUploadTab }) => {
     const selectedGroups = downloadFiles.filter(f => f.isChecked).map(f => f.value);
     if (selectedGroups.length === 0) { alert("Please select at least one group to download."); return; }
     const groupsQuery = encodeURIComponent(selectedGroups.join(','));
-    window.location.href = `http://localhost:3000/api/part-list/download-main?batchId=${currentBatchId}&groups=${groupsQuery}`;
+    window.location.href = `${API_BASE}/api/part-list/download-main?batchId=${currentBatchId}&groups=${groupsQuery}`;
     setIsModalOpen(false);
   };
 
@@ -309,13 +402,32 @@ const ListCreate = ({ activeTab, setUploadTab }) => {
             <button onClick={() => { setSubTab('history'); fetchHistory(); }} className={`flex items-center gap-2 px-4 py-3 font-bold transition-all border-b-2 ${subTab === 'history' ? 'text-ink border-ink' : 'text-muted border-transparent hover:text-ink hover:border-ink/20'}`}><History size={18} /> Upload History</button>
           </div>
 
-          {subTab === 'new' && (
+          {subTab === 'new' && hasLoadedActiveBatch && !activeBatchId && !isViewingHistoricalBatch && (
+            <div className="bg-white border-2 border-dashed border-ink/10 rounded-4xl p-16 flex flex-col items-center justify-center text-center gap-4 animate-in fade-in">
+              <Users size={48} className="text-muted" />
+              <div>
+                <h3 className="font-display text-xl font-bold text-ink mb-1">No shared batch is active yet</h3>
+                <p className="text-sm text-muted max-w-sm">Everyone works on the same batch by default. Start one to begin uploading.</p>
+              </div>
+              <button onClick={() => startNewBatch().catch(() => alert('Failed to start a new batch.'))} className="bg-ink text-accent px-8 py-3 rounded-xl font-bold hover:opacity-90 transition-colors flex items-center gap-2">
+                <Plus size={18} /> Start New Batch
+              </button>
+            </div>
+          )}
+
+          {subTab === 'new' && (activeBatchId || isViewingHistoricalBatch) && (
             <div className="flex flex-col gap-6 animate-in fade-in">
               {(step === 'idle' || step === 'generating') && (
                 <div className="flex flex-col items-center gap-8">
                   <div className="w-full bg-white px-6 py-3 rounded-2xl border border-ink/5 shadow-[0_2px_10px_rgba(20,20,15,0.04)] flex justify-between items-center">
-                    <span className="text-sm font-bold text-muted">Current Batch ID:</span>
-                    <span className="text-sm font-mono bg-ink/5 px-3 py-1 rounded-md text-ink">{currentBatchId}</span>
+                    <div className="flex items-center gap-3">
+                      <span className="text-sm font-bold text-muted">Current Batch ID:</span>
+                      <span className="text-sm font-mono bg-ink/5 px-3 py-1 rounded-md text-ink">{currentBatchId}</span>
+                      <span className={`w-2 h-2 rounded-full ${isSocketConnected ? 'bg-success' : 'bg-red-400'}`} title={isSocketConnected ? 'Live updates connected' : 'Live updates disconnected'}></span>
+                    </div>
+                    <button onClick={handleStartNewBatchClick} className="text-xs bg-ink/5 hover:bg-ink/10 px-4 py-2 rounded-xl font-bold text-ink transition-colors whitespace-nowrap flex items-center gap-1.5">
+                      <RefreshCw size={14} /> Start New Batch
+                    </button>
                   </div>
 
                   <div className="w-full bg-white px-6 py-4 rounded-2xl border border-ink/5 shadow-[0_2px_10px_rgba(20,20,15,0.04)] flex flex-col gap-2">
@@ -537,9 +649,11 @@ const ListCreate = ({ activeTab, setUploadTab }) => {
 
       <div className={activeTab === 'TBOS' ? 'hidden' : ''}>
         <HandheldManager
+          key={currentBatchId}
           currentBatchId={currentBatchId}
           previewData={previewData}
           setUploadTab={setUploadTab}
+          subscribeToEvent={subscribeToEvent}
         />
       </div>
 

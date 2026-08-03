@@ -3,6 +3,8 @@ const multer = require('multer');
 const xlsx = require('xlsx');
 const { connectDB } = require('../database');
 const { validateRequiredColumns, findDuplicateHeaders, REQUIRED_FIELDS_PART_PROCUREMENT } = require('../lib/validateColumns');
+const { createBatchIfNotExists } = require('../lib/batches');
+const { emitEvent, EVENTS } = require('../lib/socketHub');
 
 const router = express.Router();
 const upload = multer({ storage: multer.memoryStorage() });
@@ -29,7 +31,7 @@ async function handlePartProcurementUpload(req, res) {
     await db.exec('BEGIN TRANSACTION');
 
     try {
-      await db.run('INSERT OR IGNORE INTO upload_batches (batch_id, upload_date) VALUES (?, ?)', [batchId, now]);
+      await createBatchIfNotExists(db, batchId);
       const stmt = await db.prepare('INSERT INTO part_procurement (batch_id, key_pp, data, upload_at) VALUES (?, ?, ?, ?)');
       for (const row of rawData) {
         await stmt.run([batchId, 'RAW', JSON.stringify(row), now]);
@@ -37,6 +39,7 @@ async function handlePartProcurementUpload(req, res) {
       await stmt.finalize();
 
       await db.exec('COMMIT');
+      emitEvent(EVENTS.BATCH_UPLOAD_UPDATED, { batchId });
       res.json({
         message: 'Part Procurement RAW saved to DB successfully',
         batchId,
