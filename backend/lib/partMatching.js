@@ -92,6 +92,22 @@ function dedupeDockEqualsSupplierRows(rows, keyFn) {
   return result;
 }
 
+// A tiny "have I seen this key before" tracker. Some Target R/O source data
+// has two rows that are identical for every purpose this system cares about
+// (same Dock IH routing + Part No, i.e. the same matching key) but differ in
+// some field the system never reads (e.g. an unused "CTL routing" column) —
+// their outputs would be byte-for-byte identical anyway. Callers pass in
+// whatever key they've already computed for matching (keyTG) rather than
+// recomputing it, and keep only the first occurrence in original row order.
+function createFirstOccurrenceTracker() {
+  const seenKeys = new Set();
+  return (key) => {
+    if (seenKeys.has(key)) return false;
+    seenKeys.add(key);
+    return true;
+  };
+}
+
 // mode 'main' has no 'T' branch and mode 'handheld' does: the handheld dock
 // routing recognizes 'ST' as its own shop, a distinction main format never
 // implemented. Kept as one function so the intentional difference is visible
@@ -111,4 +127,4 @@ function computeShop(ppDock, { mode }) {
   throw new Error(`computeShop: unknown mode "${mode}"`);
 }
 
-module.exports = { buildPpIndex, cleanTargetRow, computeShop, dedupeDockEqualsSupplierRows };
+module.exports = { buildPpIndex, cleanTargetRow, computeShop, dedupeDockEqualsSupplierRows, createFirstOccurrenceTracker };

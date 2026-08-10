@@ -4,7 +4,7 @@ const xlsx = require('xlsx');
 const fs = require('fs');
 const path = require('path');
 const archiver = require('archiver');
-const { buildPpIndex, cleanTargetRow, computeShop } = require('../lib/partMatching');
+const { buildPpIndex, cleanTargetRow, computeShop, createFirstOccurrenceTracker } = require('../lib/partMatching');
 const { buildMatchKey } = require('../lib/keyUtils');
 const { validateGroupPrefix, getStoredGroupPrefix, setStoredGroupPrefix, recordGroupPrefixUsage } = require('../lib/groupPrefix');
 const { emitEvent, EVENTS } = require('../lib/socketHub');
@@ -37,6 +37,7 @@ async function handleDownloadMain(req, res) {
     const { ppMap } = buildPpIndex(ppRows, { excludePartDesc: ['WHEEL ASSY'] });
 
     const validRows = [];
+    const isFirstOccurrence = createFirstOccurrenceTracker();
     for (const r of tgRows) {
       const t = JSON.parse(r.data);
       const { valid } = cleanTargetRow(t, { mode: 'main' });
@@ -47,6 +48,8 @@ async function handleDownloadMain(req, res) {
       const source = String(t['Source'] || t['Source '] || '').trim();
 
       const keyTG = buildMatchKey(tgDock, partNo);
+      if (!isFirstOccurrence(keyTG)) continue;
+
       const p = ppMap.get(keyTG);
 
       if (p) {
@@ -131,6 +134,7 @@ async function handlePreviewMain(req, res) {
 
     const previewData = [];
     const remindData = []; // 🔴 สร้าง Array สำหรับข้อมูล Remind
+    const isFirstOccurrence = createFirstOccurrenceTracker();
 
     for (const r of tgRows) {
       const t = JSON.parse(r.data);
@@ -143,6 +147,8 @@ async function handlePreviewMain(req, res) {
       const source = String(t['Source'] || t['Source '] || '').trim();
 
       const keyTG = buildMatchKey(tgDock, partNo);
+      if (!isFirstOccurrence(keyTG)) continue;
+
       const p = ppMap.get(keyTG);
 
       if (p) {

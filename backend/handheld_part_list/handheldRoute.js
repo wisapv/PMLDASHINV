@@ -1,6 +1,6 @@
 const express = require('express');
 const { connectDB } = require('../database');
-const { buildPpIndex, cleanTargetRow, computeShop, dedupeDockEqualsSupplierRows } = require('../lib/partMatching');
+const { buildPpIndex, cleanTargetRow, computeShop, dedupeDockEqualsSupplierRows, createFirstOccurrenceTracker } = require('../lib/partMatching');
 const { buildMatchKey } = require('../lib/keyUtils');
 const { getField } = require('../lib/fieldAliases');
 const { emitEvent, EVENTS } = require('../lib/socketHub');
@@ -31,6 +31,11 @@ async function handlePreviewHandheld(req, res) {
     const dedupedRows = dedupeDockEqualsSupplierRows(cleanedRows, (row) => getField(row, 'PART_NO_TG'));
 
     const previewData = [];
+    // Additive, and runs after the Dock=Supplier-subgroup dedup above — safe
+    // for rows that step already deduped, and catches the general case
+    // (e.g. two rows differing only in an unused source column) across the
+    // full row set.
+    const isFirstOccurrence = createFirstOccurrenceTracker();
 
     for (const t of dedupedRows) {
       const tgDock = String(t['Dock IH routing'] || t['Dock IH routing '] || '').trim();
@@ -38,6 +43,8 @@ async function handlePreviewHandheld(req, res) {
       const partNo = String(t['Part No 12 Digits'] || t['Part No 12 Digits '] || '').trim();
 
       const keyTG = buildMatchKey(tgDock, partNo);
+      if (!isFirstOccurrence(keyTG)) continue;
+
       const p = ppMap.get(keyTG);
 
       if (p) {

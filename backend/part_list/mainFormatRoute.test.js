@@ -78,6 +78,93 @@ async function seedBatch(batchId) {
   );
 }
 
+// Two rows share Dock IH routing + Part No 12 Digits (=> identical keyTG)
+// but differ in "CTL routing" — a real, unused source column (confirmed via
+// grep to be referenced nowhere in this codebase) standing in for the
+// real-world duplicate-entry scenario this dedup targets. A third row is a
+// genuinely different part and must never be dropped by the dedup.
+async function seedBatchWithDuplicateTgRows(batchId) {
+  const db = await connectDB();
+  const now = new Date().toISOString();
+  await db.run('INSERT OR IGNORE INTO upload_batches (batch_id, upload_date) VALUES (?, ?)', [batchId, now]);
+
+  const tgRows = [
+    {
+      'Part No 12 Digits': '123456789012',
+      'Supplier': 'SUPX',
+      'Dock IH routing': 'ZZ',
+      'Source': '1',
+      'CTL routing': 'CTL-FIRST',
+    },
+    {
+      'Part No 12 Digits': '123456789012',
+      'Supplier': 'SUPX',
+      'Dock IH routing': 'ZZ',
+      'Source': '1',
+      'CTL routing': 'CTL-SECOND',
+    },
+    {
+      'Part No 12 Digits': '223456789013',
+      'Supplier': 'SUPY',
+      'Dock IH routing': 'YY',
+      'Source': '1',
+    },
+  ];
+  for (const row of tgRows) {
+    await db.run(
+      'INSERT INTO target_ro (batch_id, key_tg, data, upload_at) VALUES (?, ?, ?, ?)',
+      [batchId, 'RAW', JSON.stringify(row), now]
+    );
+  }
+
+  const ppRows = [
+    {
+      'T/C TO (UNL)': '20991231',
+      'DOCK': 'ZZ',
+      'Production Routing': '',
+      'PART #': '123456789012',
+      'PART DESC': 'TEST PART A',
+      'COMP': 'C1',
+      'SUPL': 'SUPX',
+      'PLANT': 'P1',
+      'S.DOCK': 'SD1',
+      'KBN': 'K1',
+      'Model Name': 'MODL',
+      'Life Cycle Code': 'L1',
+      'V.SHARE FLG[SYS L/O DATE BASIS]': 'V1',
+      'V.SHARE VALUE': 'VV1',
+      'ORD Method': 'OM1',
+      'QTY /CONT': '10',
+      'PACK QTY/CONT': '20',
+    },
+    {
+      'T/C TO (UNL)': '20991231',
+      'DOCK': 'YY',
+      'Production Routing': '',
+      'PART #': '223456789013',
+      'PART DESC': 'TEST PART B',
+      'COMP': 'C2',
+      'SUPL': 'SUPY',
+      'PLANT': 'P2',
+      'S.DOCK': 'SD2',
+      'KBN': 'K2',
+      'Model Name': 'MODL',
+      'Life Cycle Code': 'L1',
+      'V.SHARE FLG[SYS L/O DATE BASIS]': 'V1',
+      'V.SHARE VALUE': 'VV1',
+      'ORD Method': 'OM1',
+      'QTY /CONT': '10',
+      'PACK QTY/CONT': '20',
+    },
+  ];
+  for (const row of ppRows) {
+    await db.run(
+      'INSERT INTO part_procurement (batch_id, key_pp, data, upload_at) VALUES (?, ?, ?, ?)',
+      [batchId, 'RAW', JSON.stringify(row), now]
+    );
+  }
+}
+
 async function cleanupBatch(batchId) {
   const db = await connectDB();
   await db.run('DELETE FROM target_ro WHERE batch_id = ?', batchId);
@@ -354,5 +441,152 @@ test('a Part Procurement field containing only a space produces a true empty str
   } finally {
     await cleanupBatch(batchId);
     await cleanupPrefixHistory('WSPFX');
+  }
+});
+
+test('handlePreviewMain: two target_ro rows with identical Dock IH routing + Part No (same keyTG) collapse to one, keeping the first seen; a genuinely different part is untouched', async () => {
+  const batchId = 'TEST-DEDUP-PREVIEW-' + Date.now();
+  await seedBatchWithDuplicateTgRows(batchId);
+  try {
+    const res = mockRes();
+    await handlePreviewMain({ query: { batchId, prefix: 'DEDUPFX' } }, res);
+
+    assert.strictEqual(res.statusCode, 200);
+    assert.strictEqual(res.body.data.length, 2, 'the duplicate pair must collapse to one row, plus the one genuinely different part');
+
+    const partNumbers = res.body.data.map((row) => row['Part No.*']);
+    assert.deepStrictEqual(partNumbers.sort(), ['1234567890', '2234567890'].sort());
+  } finally {
+    await cleanupBatch(batchId);
+    await cleanupPrefixHistory('DEDUPFX');
+  }
+});
+
+test('preview-main and download-main agree on row count for a batch containing the duplicate-keyTG scenario', async () => {
+  const batchId = 'TEST-DEDUP-COUNT-' + Date.now();
+  await seedBatchWithDuplicateTgRows(batchId);
+  try {
+    const previewRes = mockRes();
+    await handlePreviewMain({ query: { batchId, prefix: 'DEDUPCNT' } }, previewRes);
+    assert.strictEqual(previewRes.body.data.length, 2);
+
+    // Both matched rows resolve to the same Shop ('A', neither ZZ nor YY is
+    // SW/S9/SK) and the same Source ('1'), so they share one Group — a
+    // single-group download, which handleDownloadMain sends directly as one
+    // .xlsx rather than a .zip.
+    const groups = [...new Set(previewRes.body.data.map((row) => row['Group ID*']))];
+    assert.strictEqual(groups.length, 1);
+
+    const downloadRes = mockRes();
+    await handleDownloadMain({ query: { batchId, groups: groups[0] } }, downloadRes);
+    assert.strictEqual(downloadRes.statusCode, 200);
+    assert.ok(Buffer.isBuffer(downloadRes.body));
+
+    const wb = xlsx.read(downloadRes.body, { type: 'buffer' });
+    const ws = wb.Sheets[wb.SheetNames[0]];
+    const rows = xlsx.utils.sheet_to_json(ws, { header: 1 });
+    // Rows: 5 template header rows + data rows + one "END" sentinel row.
+    const totalDataRows = rows.length - 5 - 1;
+
+    assert.strictEqual(totalDataRows, previewRes.body.data.length, 'download-main and preview-main must agree on row count for the same batch');
+  } finally {
+    await cleanupBatch(batchId);
+    await cleanupPrefixHistory('DEDUPCNT');
+  }
+});
+
+test('handlePreviewMain: two target_ro rows with genuinely different keyTG both still appear (dedup is not overly aggressive)', async () => {
+  const batchId = 'TEST-DEDUP-REGRESSION-' + Date.now();
+  await seedBatchWithDuplicateTgRows(batchId);
+  try {
+    const res = mockRes();
+    await handlePreviewMain({ query: { batchId, prefix: 'DEDUPREG' } }, res);
+    // Confirms both distinct parts survive even though a duplicate pair
+    // was also collapsed to one — the same assertion as the first test,
+    // phrased as the explicit "not overly aggressive" regression check.
+    assert.strictEqual(res.body.data.length, 2);
+  } finally {
+    await cleanupBatch(batchId);
+    await cleanupPrefixHistory('DEDUPREG');
+  }
+});
+
+test('handleProcessAssignAddr: the new keyTG dedup composes correctly with the existing Dock=Supplier-subgroup dedup', async () => {
+  const batchId = 'TEST-DEDUP-HANDHELD-COMPOSE-' + Date.now();
+  const db = await connectDB();
+  const now = new Date().toISOString();
+  await db.run('INSERT OR IGNORE INTO upload_batches (batch_id, upload_date) VALUES (?, ?)', [batchId, now]);
+
+  // Part A: a Dock=Supplier subgroup pair (Dock IH routing === Supplier),
+  // two rows differing only by Source — this is what dedupeDockEqualsSupplierRows
+  // (keyed by Part No only) already collapses today, unrelated to this task.
+  // Part B: a general keyTG duplicate pair (same Dock IH routing + Part No)
+  // differing only in an unused source column — the new dedup this task adds.
+  // Part C: a genuinely different part, must never be dropped by either dedup.
+  const tgRows = [
+    { 'Part No 12 Digits': 'AAAAAAAAAAAA', 'Supplier': 'SUPD', 'Dock IH routing': 'SUPD', 'Source': 'S1' },
+    { 'Part No 12 Digits': 'AAAAAAAAAAAA', 'Supplier': 'SUPD', 'Dock IH routing': 'SUPD', 'Source': 'S2' },
+    { 'Part No 12 Digits': 'BBBBBBBBBBBB', 'Supplier': 'SUPX', 'Dock IH routing': 'ZZ', 'Source': '1', 'CTL routing': 'CTL-FIRST' },
+    { 'Part No 12 Digits': 'BBBBBBBBBBBB', 'Supplier': 'SUPX', 'Dock IH routing': 'ZZ', 'Source': '1', 'CTL routing': 'CTL-SECOND' },
+    { 'Part No 12 Digits': 'CCCCCCCCCCCC', 'Supplier': 'SUPY', 'Dock IH routing': 'YY', 'Source': '1' },
+  ];
+  for (const row of tgRows) {
+    await db.run(
+      'INSERT INTO target_ro (batch_id, key_tg, data, upload_at) VALUES (?, ?, ?, ?)',
+      [batchId, 'RAW', JSON.stringify(row), now]
+    );
+  }
+
+  const ppBase = {
+    'T/C TO (UNL)': '20991231',
+    'Production Routing': '',
+    'COMP': 'C1',
+    'PLANT': 'P1',
+    'S.DOCK': 'SD1',
+    'KBN': 'K1',
+    'Model Name': 'MODL',
+    'Life Cycle Code': 'L1',
+    'V.SHARE FLG[SYS L/O DATE BASIS]': 'V1',
+    'V.SHARE VALUE': 'VV1',
+    'ORD Method': 'OM1',
+    'QTY /CONT': '10',
+    'PACK QTY/CONT': '20',
+  };
+  const ppRows = [
+    { ...ppBase, 'DOCK': 'SUPD', 'PART #': 'AAAAAAAAAAAA', 'PART DESC': 'PART A', 'SUPL': 'SUPD' },
+    { ...ppBase, 'DOCK': 'ZZ', 'PART #': 'BBBBBBBBBBBB', 'PART DESC': 'PART B', 'SUPL': 'SUPX' },
+    { ...ppBase, 'DOCK': 'YY', 'PART #': 'CCCCCCCCCCCC', 'PART DESC': 'PART C', 'SUPL': 'SUPY' },
+  ];
+  for (const row of ppRows) {
+    await db.run(
+      'INSERT INTO part_procurement (batch_id, key_pp, data, upload_at) VALUES (?, ?, ?, ?)',
+      [batchId, 'RAW', JSON.stringify(row), now]
+    );
+  }
+
+  try {
+    const addrHeaders = ['T/C TO (UNL)', 'DOCK', 'PART #', 'Kanban Print Address', 'Lineside Address', 'PART DESC'];
+    const addrRows = [
+      ['20991231', 'SUPD', 'AAAAAAAAAAAA', 'WH01', '', 'PART A'],
+      ['20991231', 'ZZ', 'BBBBBBBBBBBB', 'WH02', '', 'PART B'],
+      ['20991231', 'YY', 'CCCCCCCCCCCC', 'WH03', '', 'PART C'],
+    ];
+    const addrBuffer = bufferFromAoa([addrHeaders, ...addrRows]);
+
+    const res = mockRes();
+    await handleProcessAssignAddr({ file: { buffer: addrBuffer }, body: { batchId } }, res);
+
+    assert.strictEqual(res.statusCode, 200);
+    assert.strictEqual(res.body.hold.length, 0);
+    assert.strictEqual(res.body.remind.length, 0);
+    // One row per distinct part: the Dock=Supplier pair and the keyTG
+    // duplicate pair each collapse to one, the genuinely different part
+    // is untouched by both dedups.
+    assert.strictEqual(res.body.data.length, 3);
+
+    const partNumbers = res.body.data.map((row) => row['Part no.']).sort();
+    assert.deepStrictEqual(partNumbers, ['AAAAAAAAAAAA', 'BBBBBBBBBBBB', 'CCCCCCCCCCCC']);
+  } finally {
+    await cleanupBatch(batchId);
   }
 });

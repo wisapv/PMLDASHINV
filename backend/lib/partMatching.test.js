@@ -1,6 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert');
-const { buildPpIndex, cleanTargetRow, computeShop, dedupeDockEqualsSupplierRows } = require('./partMatching');
+const { buildPpIndex, cleanTargetRow, computeShop, dedupeDockEqualsSupplierRows, createFirstOccurrenceTracker } = require('./partMatching');
 
 function ppRow(data) {
   return { data: JSON.stringify(data) };
@@ -112,6 +112,22 @@ test('dedupeDockEqualsSupplierRows: non-subgroup rows pass through untouched, or
 
   const result = dedupeDockEqualsSupplierRows(rows, (row) => row.partNo);
   assert.deepStrictEqual(result.map((r) => r.tag), ['keep-1', 'dup-first', 'keep-2', 'keep-3']);
+});
+
+test('createFirstOccurrenceTracker: true on the first occurrence of a key, false on every repeat', () => {
+  const isFirstOccurrence = createFirstOccurrenceTracker();
+  assert.strictEqual(isFirstOccurrence('A'), true);
+  assert.strictEqual(isFirstOccurrence('A'), false);
+  assert.strictEqual(isFirstOccurrence('A'), false);
+});
+
+test('createFirstOccurrenceTracker: tracks distinct keys independently', () => {
+  const isFirstOccurrence = createFirstOccurrenceTracker();
+  assert.strictEqual(isFirstOccurrence('A'), true);
+  assert.strictEqual(isFirstOccurrence('B'), true);
+  assert.strictEqual(isFirstOccurrence('A'), false);
+  assert.strictEqual(isFirstOccurrence('B'), false);
+  assert.strictEqual(isFirstOccurrence('C'), true);
 });
 
 test('computeShop: main mode branches', () => {

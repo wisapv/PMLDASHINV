@@ -3,7 +3,7 @@ const express = require('express');
 const multer = require('multer');
 const xlsx = require('xlsx');
 const { connectDB } = require('../database');
-const { buildPpIndex, cleanTargetRow, dedupeDockEqualsSupplierRows } = require('../lib/partMatching');
+const { buildPpIndex, cleanTargetRow, dedupeDockEqualsSupplierRows, createFirstOccurrenceTracker } = require('../lib/partMatching');
 const { buildMatchKey } = require('../lib/keyUtils');
 const { parseExcelDate } = require('../lib/dateUtils');
 const { getField } = require('../lib/fieldAliases');
@@ -128,12 +128,20 @@ async function handleProcessAssignAddr(req, res) {
         });
         const dedupedRows = dedupeDockEqualsSupplierRows(cleanedRows, (row) => getField(row, 'PART_NO_TG'));
 
+        // Additive, and runs after the Dock=Supplier-subgroup dedup above —
+        // safe/idempotent for rows that step already deduped, and catches
+        // the general case (e.g. two rows differing only in an unused
+        // source column like "CTL routing") across the full row set.
+        const isFirstOccurrence = createFirstOccurrenceTracker();
+
         dedupedRows.forEach(t => {
             const tgDock = String(t['Dock IH routing'] || t['Dock IH routing '] || '').trim();
             const supplier = String(t['Supplier'] || t['Supplier '] || '').trim();
             const partNoRaw = String(t['Part No 12 Digits'] || t['Part No 12 Digits '] || '').trim();
 
             const keyTG = buildMatchKey(tgDock, partNoRaw);
+            if (!isFirstOccurrence(keyTG)) return;
+
             const p = ppMap.get(keyTG);
 
             if (p) {
