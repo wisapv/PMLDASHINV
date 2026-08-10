@@ -8,6 +8,7 @@ const { buildPpIndex, cleanTargetRow, computeShop } = require('../lib/partMatchi
 const { buildMatchKey } = require('../lib/keyUtils');
 const { validateGroupPrefix, getStoredGroupPrefix, setStoredGroupPrefix, recordGroupPrefixUsage } = require('../lib/groupPrefix');
 const { emitEvent, EVENTS } = require('../lib/socketHub');
+const { blankOrTrim } = require('../lib/textUtils');
 
 const router = express.Router();
 
@@ -64,14 +65,14 @@ async function handleDownloadMain(req, res) {
     const header = xlsx.utils.sheet_to_json(wsTemplate, { header: 1 }).slice(0, 5);
 
     const generateDataRow = (t, p) => [
-      "AA", "B", t['Group'] || "", "6", String(p['PART #'] || p['PART # '] || "").substring(0, 10), 
-      p['Suffix No'] || "", p['COMP'] || "", "S", p['Production Routing'] || p['Production Routing '] || "", 
-      p['DOCK'] || p['DOCK '] || "", p['SUPL'] || "", p['PLANT'] || "", p['S.DOCK'] || "", 
-      "", "", p['KBN'] || "", t['Source'] || t['Source '] || "", p['Dock Comb.'] || "", 
-      String(p['Model Name'] || "").substring(0, 4), p['Life Cycle Code'] || p['Life cycle code'] || "", 
-      p['V.SHARE FLG[SYS L/O DATE BASIS]'] || "", p['V.SHARE VALUE'] || "", 
-      p['ORD Method'] || "", p['QTY /CONT'] || "", p['PACK QTY/CONT'] || "", 
-      "3", p['PART DESC'] || ""
+      "AA", "B", blankOrTrim(t['Group']), "6", blankOrTrim(p['PART #'] || p['PART # ']).substring(0, 10),
+      blankOrTrim(p['Suffix No']), blankOrTrim(p['COMP']), "S", blankOrTrim(p['Production Routing'] || p['Production Routing ']),
+      blankOrTrim(p['DOCK'] || p['DOCK ']), blankOrTrim(p['SUPL']), blankOrTrim(p['PLANT']), blankOrTrim(p['S.DOCK']),
+      "", "", blankOrTrim(p['KBN']), blankOrTrim(t['Source'] || t['Source ']), blankOrTrim(p['Dock Comb.']),
+      blankOrTrim(p['Model Name']).substring(0, 4), blankOrTrim(p['Life Cycle Code'] || p['Life cycle code']),
+      blankOrTrim(p['V.SHARE FLG[SYS L/O DATE BASIS]']), blankOrTrim(p['V.SHARE VALUE']),
+      blankOrTrim(p['ORD Method']), blankOrTrim(p['QTY /CONT']), blankOrTrim(p['PACK QTY/CONT']),
+      "3", blankOrTrim(p['PART DESC'])
     ];
 
     if (selectedGroups.length === 1) {
@@ -155,31 +156,31 @@ async function handlePreviewMain(req, res) {
         previewData.push({
           "Company*": "AA",
           "Company plant code*": "B",
-          "Group ID*": t['Group'] || "",
+          "Group ID*": blankOrTrim(t['Group']),
           "CTL flag*": "6",
-          "Part No.*": String(p['PART #'] || p['PART # '] || "").substring(0, 10),
-          "Suffix*": p['Suffix No'] || "",
-          "Receiving company*": p['COMP'] || "",
+          "Part No.*": blankOrTrim(p['PART #'] || p['PART # ']).substring(0, 10),
+          "Suffix*": blankOrTrim(p['Suffix No']),
+          "Receiving company*": blankOrTrim(p['COMP']),
           "Receiving company plant code*": "S",
-          "Production process routing": p['Production Routing'] || p['Production Routing '] || "",
-          "Dock code*": p['DOCK'] || p['DOCK '] || "",
-          "Supplier*": p['SUPL'] || "",
-          "Supplier plant code*": p['PLANT'] || "",
-          "Supplier shipping dock": p['S.DOCK'] || "",
+          "Production process routing": blankOrTrim(p['Production Routing'] || p['Production Routing ']),
+          "Dock code*": blankOrTrim(p['DOCK'] || p['DOCK ']),
+          "Supplier*": blankOrTrim(p['SUPL']),
+          "Supplier plant code*": blankOrTrim(p['PLANT']),
+          "Supplier shipping dock": blankOrTrim(p['S.DOCK']),
           "Previous process routing": "",
           "Dummy": "",
-          "Kanban No.*": p['KBN'] || "",
-          "Source code*": t['Source'] || t['Source '] || "",
-          "Hikiate matching key*": p['Dock Comb.'] || "",
-          "Model 1": String(p['Model Name'] || "").substring(0, 4),
-          "Life cycle code*": p['Life cycle code'] || p['Life Cycle Code'] || "",
-          "Vender share type": p['V.SHARE FLG[SYS L/O DATE BASIS]'] || "",
-          "Vender share value": p['V.SHARE VALUE'] || "",
-          "Order method*": p['ORD Method'] || "",
-          "Order lot*": p['QTY /CONT'] || "",
-          "Order lot size*": p['PACK QTY/CONT'] || "",
+          "Kanban No.*": blankOrTrim(p['KBN']),
+          "Source code*": blankOrTrim(t['Source'] || t['Source ']),
+          "Hikiate matching key*": blankOrTrim(p['Dock Comb.']),
+          "Model 1": blankOrTrim(p['Model Name']).substring(0, 4),
+          "Life cycle code*": blankOrTrim(p['Life cycle code'] || p['Life Cycle Code']),
+          "Vender share type": blankOrTrim(p['V.SHARE FLG[SYS L/O DATE BASIS]']),
+          "Vender share value": blankOrTrim(p['V.SHARE VALUE']),
+          "Order method*": blankOrTrim(p['ORD Method']),
+          "Order lot*": blankOrTrim(p['QTY /CONT']),
+          "Order lot size*": blankOrTrim(p['PACK QTY/CONT']),
           "Round up flag*": "3",
-          "Part name*": p['PART DESC'] || ""
+          "Part name*": blankOrTrim(p['PART DESC'])
         });
       } else {
         // 🔴 ถ้าไม่มีข้อมูลใน Part Procure ให้เอามาใส่ Remind (เงื่อนไขเดียวกับ Handheld)

@@ -4,6 +4,7 @@ const { buildPpIndex, cleanTargetRow, computeShop, dedupeDockEqualsSupplierRows 
 const { buildMatchKey } = require('../lib/keyUtils');
 const { getField } = require('../lib/fieldAliases');
 const { emitEvent, EVENTS } = require('../lib/socketHub');
+const { blankOrTrim } = require('../lib/textUtils');
 const router = express.Router();
 
 async function handlePreviewHandheld(req, res) {
@@ -46,13 +47,13 @@ async function handlePreviewHandheld(req, res) {
         previewData.push({
           "Shop": shop,
           "Dock": ppDock,
-          "Supplier": p['SUPL'] || p['SUPL '] || "",
-          "S.plant": p['PLANT'] || p['PLANT '] || "",
-          "S.dock": p['S.DOCK'] || p['S.DOCK '] || "",
-          "Part no.": p['PART #'] || p['PART # '] || "",
-          "Part name": p['PART DESC'] || p['PART DESC '] || "",
-          "kbn": p['KBN'] || p['KBN '] || "",
-          "Q'ty": p['QTY /CONT'] || p['QTY /CONT '] || ""
+          "Supplier": blankOrTrim(p['SUPL'] || p['SUPL ']),
+          "S.plant": blankOrTrim(p['PLANT'] || p['PLANT ']),
+          "S.dock": blankOrTrim(p['S.DOCK'] || p['S.DOCK ']),
+          "Part no.": blankOrTrim(p['PART #'] || p['PART # ']),
+          "Part name": blankOrTrim(p['PART DESC'] || p['PART DESC ']),
+          "kbn": blankOrTrim(p['KBN'] || p['KBN ']),
+          "Q'ty": blankOrTrim(p['QTY /CONT'] || p['QTY /CONT '])
         });
       }
     }

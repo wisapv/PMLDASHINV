@@ -9,6 +9,7 @@ const { parseExcelDate } = require('../lib/dateUtils');
 const { getField } = require('../lib/fieldAliases');
 const { getStoredGroupPrefix } = require('../lib/groupPrefix');
 const { emitEvent, EVENTS } = require('../lib/socketHub');
+const { blankOrTrim } = require('../lib/textUtils');
 const router = express.Router();
 const upload = multer({ storage: multer.memoryStorage() });
 
@@ -143,7 +144,7 @@ async function handleProcessAssignAddr(req, res) {
                         "Dock IH": tgDock,
                         "Supplier": supplier,
                         "Part No": partNoRaw,
-                        "Source": t['Source'] || t['Source '] || "",
+                        "Source": blankOrTrim(t['Source'] || t['Source ']),
                         "Reason": "Missing in Part Procurement"
                     });
                 }
@@ -166,12 +167,12 @@ async function handleProcessAssignAddr(req, res) {
             const ppDock = String(p['DOCK'] || p['DOCK '] || '').trim();
 
             if (!addrInfo) {
-                holdData.push({ 
+                holdData.push({
                     "Dock": ppDock,
-                    "Supplier": p['SUPL'] || p['SUPL '] || "",
-                    "Part No": p['PART #'] || p['PART # '] || "",
-                    "Part Name": p['PART DESC'] || p['PART DESC '] || "",
-                    "Reason": "Missing in Address Master" 
+                    "Supplier": blankOrTrim(p['SUPL'] || p['SUPL ']),
+                    "Part No": blankOrTrim(p['PART #'] || p['PART # ']),
+                    "Part Name": blankOrTrim(p['PART DESC'] || p['PART DESC ']),
+                    "Reason": "Missing in Address Master"
                 });
                 return;
             }
@@ -200,13 +201,13 @@ async function handleProcessAssignAddr(req, res) {
                     Shop: finalShop,
                     Group: groupPrefix + finalShop + source,
                     Dock: ppDock,
-                    Supplier: p['SUPL'] || p['SUPL '] || "",
-                    "S.plant": p['PLANT'] || p['PLANT '] || "",             
-                    "S.dock": p['S.DOCK'] || p['S.DOCK '] || "",             
-                    "Part no.": p['PART #'] || p['PART # '] || "",           
-                    "Part name": p['PART DESC'] || p['PART DESC '] || "",
-                    kbn: p['KBN'] || p['KBN '] || "",
-                    "Q'ty": p['QTY /CONT'] || p['QTY /CONT '] || "",
+                    Supplier: blankOrTrim(p['SUPL'] || p['SUPL ']),
+                    "S.plant": blankOrTrim(p['PLANT'] || p['PLANT ']),
+                    "S.dock": blankOrTrim(p['S.DOCK'] || p['S.DOCK ']),
+                    "Part no.": blankOrTrim(p['PART #'] || p['PART # ']),
+                    "Part name": blankOrTrim(p['PART DESC'] || p['PART DESC ']),
+                    kbn: blankOrTrim(p['KBN'] || p['KBN ']),
+                    "Q'ty": blankOrTrim(p['QTY /CONT'] || p['QTY /CONT ']),
                     Addr: address,
                     ShortAddr: shortAddr, // 🔴 นำความยาวใหม่ที่คำนวณได้ไปใช้
                     PIC: picType

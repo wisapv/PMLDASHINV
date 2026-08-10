@@ -280,3 +280,79 @@ test('handleProcessAssignAddr: emits handheld:updated on success', async () => {
     await cleanupBatch(batchId);
   }
 });
+
+test('a Part Procurement field containing only a space produces a true empty string in preview-main, download-main, and process-assign-addr output', async () => {
+  const batchId = 'TEST-GP-WHITESPACE-' + Date.now();
+  const db = await connectDB();
+  const now = new Date().toISOString();
+  await db.run('INSERT OR IGNORE INTO upload_batches (batch_id, upload_date) VALUES (?, ?)', [batchId, now]);
+
+  const tgRow = {
+    'Part No 12 Digits': '123456789012',
+    'Supplier': 'SUPX',
+    'Dock IH routing': 'ZZ',
+    'Source': '1',
+  };
+  await db.run(
+    'INSERT INTO target_ro (batch_id, key_tg, data, upload_at) VALUES (?, ?, ?, ?)',
+    [batchId, 'RAW', JSON.stringify(tgRow), now]
+  );
+
+  // COMP, PLANT, V.SHARE FLG, and V.SHARE VALUE are whitespace-only — a
+  // stand-in for a spacebar-instead-of-empty data entry artifact.
+  const ppRow = {
+    'T/C TO (UNL)': '20991231',
+    'DOCK': 'ZZ',
+    'Production Routing': '',
+    'PART #': '123456789012',
+    'PART DESC': 'TEST PART',
+    'COMP': ' ',
+    'SUPL': 'SUPX',
+    'PLANT': ' ',
+    'S.DOCK': 'SD1',
+    'KBN': 'K1',
+    'Model Name': 'MODL',
+    'Life Cycle Code': 'L1',
+    'V.SHARE FLG[SYS L/O DATE BASIS]': ' ',
+    'V.SHARE VALUE': ' ',
+    'ORD Method': 'OM1',
+    'QTY /CONT': '10',
+    'PACK QTY/CONT': '20',
+  };
+  await db.run(
+    'INSERT INTO part_procurement (batch_id, key_pp, data, upload_at) VALUES (?, ?, ?, ?)',
+    [batchId, 'RAW', JSON.stringify(ppRow), now]
+  );
+
+  try {
+    const previewRes = mockRes();
+    await handlePreviewMain({ query: { batchId, prefix: 'WSPFX' } }, previewRes);
+    const previewRow = previewRes.body.data[0];
+    assert.strictEqual(previewRow['Receiving company*'], '');
+    assert.strictEqual(previewRow['Supplier plant code*'], '');
+    assert.strictEqual(previewRow['Vender share type'], '');
+    assert.strictEqual(previewRow['Vender share value'], '');
+
+    const downloadRes = mockRes();
+    await handleDownloadMain({ query: { batchId, groups: 'WSPFXA1' } }, downloadRes);
+    const wb = xlsx.read(downloadRes.body, { type: 'buffer' });
+    const ws = wb.Sheets[wb.SheetNames[0]];
+    const rows = xlsx.utils.sheet_to_json(ws, { header: 1, defval: '' });
+    const dataRow = rows[5]; // 5 template header rows precede the data rows.
+    // Positional layout from generateDataRow: [.., COMP(idx6), .., PLANT(idx11), .., V.SHARE FLG(idx20), V.SHARE VALUE(idx21), ..]
+    assert.strictEqual(dataRow[6], '');
+    assert.strictEqual(dataRow[11], '');
+    assert.strictEqual(dataRow[20], '');
+    assert.strictEqual(dataRow[21], '');
+
+    const addrHeaders = ['T/C TO (UNL)', 'DOCK', 'PART #', 'Kanban Print Address', 'Lineside Address', 'PART DESC'];
+    const addrRow = ['20991231', 'ZZ', '123456789012', 'WH01', '', 'TEST PART'];
+    const addrBuffer = bufferFromAoa([addrHeaders, addrRow]);
+    const assignRes = mockRes();
+    await handleProcessAssignAddr({ file: { buffer: addrBuffer }, body: { batchId } }, assignRes);
+    assert.strictEqual(assignRes.body.data[0]['S.plant'], '');
+  } finally {
+    await cleanupBatch(batchId);
+    await cleanupPrefixHistory('WSPFX');
+  }
+});
