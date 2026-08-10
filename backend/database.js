@@ -55,6 +55,9 @@ async function initDB() {
   if (!uploadBatchesColumns.some((col) => col.name === 'is_active')) {
     await db.exec(`ALTER TABLE upload_batches ADD COLUMN is_active INTEGER NOT NULL DEFAULT 0`);
   }
+  if (!uploadBatchesColumns.some((col) => col.name === 'is_baseline')) {
+    await db.exec(`ALTER TABLE upload_batches ADD COLUMN is_baseline INTEGER NOT NULL DEFAULT 0`);
+  }
 
   console.log("SQLite Database initialized with Batch System.");
   return db;

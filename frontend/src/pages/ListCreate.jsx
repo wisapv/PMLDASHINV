@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
   CheckCircle2, FileSpreadsheet, Database, Loader2, Download,
   X, CheckSquare, Square, Merge, History, Plus, Filter,
-  ArrowRight, AlertTriangle, ChevronDown, Pencil, RefreshCw, Users
+  ArrowRight, AlertTriangle, ChevronDown, Pencil, RefreshCw, Users, PackagePlus, Star
 } from 'lucide-react';
 import HandheldManager from './HandheldManager';
 import { useActiveBatch, SOCKET_EVENTS, API_BASE } from '../hooks/useActiveBatch';
@@ -32,6 +32,7 @@ const ListCreate = ({ activeTab, setUploadTab }) => {
   const [previewData, setPreviewData] = useState([]);
 
   const [tbosRemindData, setTbosRemindData] = useState([]);
+  const [newPartsData, setNewPartsData] = useState([]);
 
   const [selectedPreviewGroup, setSelectedPreviewGroup] = useState('All');
   const [isModalOpen, setIsModalOpen] = useState(false);
@@ -76,6 +77,7 @@ const ListCreate = ({ activeTab, setUploadTab }) => {
     setUploadStatus({ target: false, proc: false });
     setPreviewData([]);
     setTbosRemindData([]);
+    setNewPartsData([]);
     setSelectedPreviewGroup('All');
     setDownloadFiles([]);
     setGroupPrefixError('');
@@ -198,6 +200,7 @@ const ListCreate = ({ activeTab, setUploadTab }) => {
     setStep('idle');
     setPreviewData([]);
     setTbosRemindData([]);
+    setNewPartsData([]);
     setSelectedPreviewGroup('All');
     setDownloadFiles([]);
     setGroupPrefixError('');
@@ -292,6 +295,23 @@ const ListCreate = ({ activeTab, setUploadTab }) => {
     } catch (err) { alert("Failed to connect to server."); }
   };
 
+  const handleDownloadNewParts = () => {
+    window.location.href = `${API_BASE}/api/part-list/new-parts-since-last-batch/download?batchId=${currentBatchId}`;
+  };
+
+  const handleSetBaseline = async (batchId) => {
+    if (!window.confirm('This will pin this batch as the shared New Parts comparison baseline for everyone — continue?')) return;
+    try {
+      const response = await fetch(`${API_BASE}/api/part-list/set-baseline-batch`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ batchId }),
+      });
+      if (response.ok) fetchHistory();
+      else alert("Failed to set baseline batch.");
+    } catch (err) { alert("Failed to connect to server."); }
+  };
+
   const handlePreviewHistory = (batchId) => {
     // Read-only browsing of a past (possibly no-longer-active) batch — must
     // not be treated as, or disrupted by, the shared active batch changing.
@@ -301,6 +321,7 @@ const ListCreate = ({ activeTab, setUploadTab }) => {
     setSubTab('new');
     setSelectedPreviewGroup('All');
     setTbosRemindData([]);
+    setNewPartsData([]);
     // Re-viewing an already-merged batch must use whatever prefix is already
     // stored for it, not silently overwrite it with the input's current value.
     handleMergeData(batchId, { includePrefix: false });
@@ -319,6 +340,7 @@ const ListCreate = ({ activeTab, setUploadTab }) => {
         const result = await response.json();
         setUploadStatus(prev => ({ ...prev, target: true }));
         showDuplicateHeaderWarning(result);
+        setNewPartsData(result.newParts || []);
         setStep('idle');
         fetchHistory();
       }
@@ -417,6 +439,44 @@ const ListCreate = ({ activeTab, setUploadTab }) => {
 
           {subTab === 'new' && (activeBatchId || isViewingHistoricalBatch) && (
             <div className="flex flex-col gap-6 animate-in fade-in">
+              {newPartsData && newPartsData.length > 0 && (
+                <div className="bg-amber-50/50 border border-amber-100 rounded-4xl p-6 animate-in fade-in slide-in-from-bottom-4">
+                  <div className="flex items-center gap-2 text-amber-700 mb-4">
+                    <PackagePlus size={24} />
+                    <h3 className="font-bold text-lg">New Parts Since Last Batch</h3>
+                    <span className="ml-auto text-sm font-bold bg-amber-100 px-3 py-1.5 rounded-lg shadow-sm">Total: {newPartsData.length} items</span>
+                  </div>
+                  <p className="text-sm text-amber-700/80 mb-4">These parts weren't in the previous batch's Target R/O — they need to be registered in TBOS.</p>
+
+                  <div className="max-h-[300px] overflow-y-auto border border-amber-100 rounded-xl bg-white shadow-sm mb-4">
+                    <table className="w-full text-left text-[11px] whitespace-nowrap">
+                      <thead className="bg-amber-50 sticky top-0">
+                        <tr className="text-amber-700 uppercase tracking-wider">
+                          <th className="px-4 py-3 border-b border-amber-100">Part No</th>
+                          <th className="px-4 py-3 border-b border-amber-100">Part Name</th>
+                          <th className="px-4 py-3 border-b border-amber-100">Supplier</th>
+                          <th className="px-4 py-3 border-b border-amber-100">Dock IH</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-amber-50">
+                        {newPartsData.map((r, i) => (
+                          <tr key={i} className="hover:bg-amber-50/30 transition-colors">
+                            <td className="px-4 py-3 font-mono text-ink">{r['Part No 12 Digits']}</td>
+                            <td className="px-4 py-3 text-ink">{r['Part Name'] || r['Part Description'] || ''}</td>
+                            <td className="px-4 py-3 text-ink">{r['Supplier']}</td>
+                            <td className="px-4 py-3 font-medium text-ink">{r['Dock IH routing']}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+
+                  <button onClick={handleDownloadNewParts} className="bg-white border-2 border-amber-600 text-amber-700 px-6 py-2.5 rounded-xl font-bold hover:bg-amber-50 transition-colors flex items-center gap-2">
+                    <Download size={16} /> Download
+                  </button>
+                </div>
+              )}
+
               {(step === 'idle' || step === 'generating') && (
                 <div className="flex flex-col items-center gap-8">
                   <div className="w-full bg-white px-6 py-3 rounded-2xl border border-ink/5 shadow-[0_2px_10px_rgba(20,20,15,0.04)] flex justify-between items-center">
@@ -612,6 +672,7 @@ const ListCreate = ({ activeTab, setUploadTab }) => {
                       <th className="px-6 py-4 rounded-tl-2xl">Batch ID</th>
                       <th className="px-6 py-4">Upload Date</th>
                       <th className="px-6 py-4 text-center">Records (Target / Proc)</th>
+                      <th className="px-6 py-4 text-center">Baseline</th>
                       <th className="px-6 py-4 text-right rounded-tr-2xl">Actions</th>
                     </tr>
                   </thead>
@@ -625,6 +686,17 @@ const ListCreate = ({ activeTab, setUploadTab }) => {
                             <span className="bg-blue-50 text-blue-600 px-2 py-1 rounded-md font-medium text-xs mr-2">{b.tg_count}</span> /
                             <span className="bg-purple-50 text-purple-600 px-2 py-1 rounded-md font-medium text-xs ml-2">{b.pp_count}</span>
                           </td>
+                          <td className="px-6 py-4 text-center">
+                            {b.is_baseline ? (
+                              <span className="inline-flex items-center gap-1.5 bg-amber-100 text-amber-700 px-3 py-1.5 rounded-lg font-bold text-xs shadow-sm">
+                                <Star size={12} className="fill-amber-700" /> Current Baseline
+                              </span>
+                            ) : (
+                              <button onClick={() => handleSetBaseline(b.batch_id)} className="text-ink/60 font-bold bg-ink/5 px-3 py-1.5 rounded-lg text-xs hover:bg-ink hover:text-accent transition-colors shadow-sm">
+                                Set as Baseline
+                              </button>
+                            )}
+                          </td>
                           <td className="px-6 py-4 flex justify-end gap-3">
                             <button onClick={() => handlePreviewHistory(b.batch_id)} className="text-ink font-bold bg-accent/20 px-4 py-2 rounded-lg text-xs hover:bg-ink hover:text-accent transition-colors shadow-sm">
                               Preview / Use
@@ -637,7 +709,7 @@ const ListCreate = ({ activeTab, setUploadTab }) => {
                       ))
                     ) : (
                       <tr>
-                        <td colSpan="4" className="text-center py-10 text-muted">No upload history found.</td>
+                        <td colSpan="5" className="text-center py-10 text-muted">No upload history found.</td>
                       </tr>
                     )}
                   </tbody>

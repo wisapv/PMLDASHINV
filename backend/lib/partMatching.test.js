@@ -1,6 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert');
-const { buildPpIndex, cleanTargetRow, computeShop, dedupeDockEqualsSupplierRows, createFirstOccurrenceTracker } = require('./partMatching');
+const { buildPpIndex, cleanTargetRow, computeShop, dedupeDockEqualsSupplierRows, createFirstOccurrenceTracker, findNewPartsSinceBatch } = require('./partMatching');
 
 function ppRow(data) {
   return { data: JSON.stringify(data) };
@@ -128,6 +128,57 @@ test('createFirstOccurrenceTracker: tracks distinct keys independently', () => {
   assert.strictEqual(isFirstOccurrence('A'), false);
   assert.strictEqual(isFirstOccurrence('B'), false);
   assert.strictEqual(isFirstOccurrence('C'), true);
+});
+
+function tgRow({ dock, partNo, supplier = 'ABC' }) {
+  return { 'Dock IH routing': dock, 'Part No 12 Digits': partNo, 'Supplier': supplier };
+}
+
+test('findNewPartsSinceBatch: a part present in both sets is excluded', () => {
+  const previous = [tgRow({ dock: 'SW', partNo: '111111111111' })];
+  const current = [tgRow({ dock: 'SW', partNo: '111111111111' })];
+  assert.deepStrictEqual(findNewPartsSinceBatch(current, previous), []);
+});
+
+test('findNewPartsSinceBatch: a part only in the current set is included', () => {
+  const previous = [tgRow({ dock: 'SW', partNo: '111111111111' })];
+  const current = [tgRow({ dock: 'SW', partNo: '111111111111' }), tgRow({ dock: 'SW', partNo: '222222222222' })];
+  const result = findNewPartsSinceBatch(current, previous);
+  assert.strictEqual(result.length, 1);
+  assert.strictEqual(result[0]['Part No 12 Digits'], '222222222222');
+});
+
+test('findNewPartsSinceBatch: invalid/blank rows in either set do not affect the comparison', () => {
+  // Blank part no in current: never counted as new, regardless of the previous set.
+  const blankCurrent = [tgRow({ dock: 'SW', partNo: '' })];
+  assert.deepStrictEqual(findNewPartsSinceBatch(blankCurrent, []), []);
+
+  // Blank/"N/A" part no in previous: ignored when building the comparison set,
+  // so it can never "shadow" a real part in the current set that happens to
+  // share the same (blank) key.
+  const previousWithBlank = [tgRow({ dock: 'SW', partNo: '' }), tgRow({ dock: '', partNo: 'N/A' })];
+  const current = [tgRow({ dock: 'SW', partNo: '333333333333' })];
+  const result = findNewPartsSinceBatch(current, previousWithBlank);
+  assert.strictEqual(result.length, 1);
+  assert.strictEqual(result[0]['Part No 12 Digits'], '333333333333');
+});
+
+test('findNewPartsSinceBatch: an empty previous set (first-ever batch) returns all valid current rows as new', () => {
+  const current = [
+    tgRow({ dock: 'SW', partNo: '111111111111' }),
+    tgRow({ dock: 'ST', partNo: '222222222222' }),
+    tgRow({ dock: 'SW', partNo: '' }), // invalid, must still be excluded
+  ];
+  const result = findNewPartsSinceBatch(current, []);
+  assert.strictEqual(result.length, 2);
+  assert.deepStrictEqual(result.map((r) => r['Part No 12 Digits']).sort(), ['111111111111', '222222222222']);
+});
+
+test('findNewPartsSinceBatch: a TTAT or Dock=Supplier row (dropped by main mode) still counts as a real part', () => {
+  const previous = [];
+  const current = [tgRow({ dock: 'SW', partNo: '444444444444', supplier: 'SW' })]; // dock === supplier
+  const result = findNewPartsSinceBatch(current, previous);
+  assert.strictEqual(result.length, 1);
 });
 
 test('computeShop: main mode branches', () => {

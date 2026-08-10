@@ -2,8 +2,8 @@ const test = require('node:test');
 const assert = require('node:assert');
 const { initDB, connectDB } = require('../database');
 const { initSocketHub, EVENTS } = require('../lib/socketHub');
-const { handleGetCurrentBatch, handleStartNewBatch } = require('./activeBatchRoute');
-const { createBatchIfNotExists, setActiveBatch } = require('../lib/batches');
+const { handleGetCurrentBatch, handleStartNewBatch, handleSetBaselineBatch } = require('./activeBatchRoute');
+const { createBatchIfNotExists, setActiveBatch, getBaselineBatchId } = require('../lib/batches');
 
 function mockRes() {
   return {
@@ -91,4 +91,43 @@ test('handleGetCurrentBatch: a batch that was created but never activated is not
   } finally {
     await cleanupBatch(batchId);
   }
+});
+
+test('handleSetBaselineBatch: sets the given batch as baseline and unsets any previous one, even across repeated calls', async () => {
+  const db = await connectDB();
+  const batchA = 'TEST-ACTIVEROUTE-BASELINE-A-' + Date.now();
+  const batchB = 'TEST-ACTIVEROUTE-BASELINE-B-' + Date.now();
+  await createBatchIfNotExists(db, batchA);
+  await createBatchIfNotExists(db, batchB);
+
+  try {
+    const resA = mockRes();
+    await handleSetBaselineBatch({ body: { batchId: batchA } }, resA);
+    assert.strictEqual(resA.statusCode, 200);
+    assert.strictEqual(resA.body.batchId, batchA);
+    assert.strictEqual(await getBaselineBatchId(db), batchA);
+
+    const resB = mockRes();
+    await handleSetBaselineBatch({ body: { batchId: batchB } }, resB);
+    assert.strictEqual(await getBaselineBatchId(db), batchB);
+
+    // Repeated call with the same batch is idempotent — still exactly one baseline.
+    await handleSetBaselineBatch({ body: { batchId: batchB } }, mockRes());
+    const baselineRows = await db.all('SELECT batch_id FROM upload_batches WHERE is_baseline = 1');
+    assert.strictEqual(baselineRows.length, 1);
+    assert.strictEqual(baselineRows[0].batch_id, batchB);
+  } finally {
+    await cleanupBatch(batchA);
+    await cleanupBatch(batchB);
+  }
+});
+
+test('handleSetBaselineBatch: missing batchId is a 400, unknown batchId is a 404', async () => {
+  const missingRes = mockRes();
+  await handleSetBaselineBatch({ body: {} }, missingRes);
+  assert.strictEqual(missingRes.statusCode, 400);
+
+  const notFoundRes = mockRes();
+  await handleSetBaselineBatch({ body: { batchId: 'TEST-ACTIVEROUTE-NOPE-' + Date.now() } }, notFoundRes);
+  assert.strictEqual(notFoundRes.statusCode, 404);
 });

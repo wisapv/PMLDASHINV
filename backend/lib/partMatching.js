@@ -127,4 +127,30 @@ function computeShop(ppDock, { mode }) {
   throw new Error(`computeShop: unknown mode "${mode}"`);
 }
 
-module.exports = { buildPpIndex, cleanTargetRow, computeShop, dedupeDockEqualsSupplierRows, createFirstOccurrenceTracker };
+// Compares two sets of already-parsed Target R/O rows by keyTG (Dock IH
+// routing + Part No, built the same way as everywhere else via
+// cleanTargetRow + buildMatchKey) and returns the current batch's rows whose
+// keyTG isn't present among the previous batch's valid keyTGs. Uses
+// cleanTargetRow's 'handheld' mode on both sides — it only rejects
+// empty/N/A part numbers, so a TTAT or Dock=Supplier row (a real physical
+// part) isn't wrongly excluded from "needs registering" just because the
+// Main Format flow wouldn't count it. An empty previousTgRows (the
+// first-ever batch, nothing to compare against) naturally makes every valid
+// current row "new".
+function findNewPartsSinceBatch(currentTgRows, previousTgRows) {
+  const previousKeys = new Set();
+  for (const row of previousTgRows) {
+    const { valid } = cleanTargetRow(row, { mode: 'handheld' });
+    if (!valid) continue;
+    previousKeys.add(buildMatchKey(getField(row, 'DOCK_IH'), getField(row, 'PART_NO_TG')));
+  }
+
+  return currentTgRows.filter((row) => {
+    const { valid } = cleanTargetRow(row, { mode: 'handheld' });
+    if (!valid) return false;
+    const keyTG = buildMatchKey(getField(row, 'DOCK_IH'), getField(row, 'PART_NO_TG'));
+    return !previousKeys.has(keyTG);
+  });
+}
+
+module.exports = { buildPpIndex, cleanTargetRow, computeShop, dedupeDockEqualsSupplierRows, createFirstOccurrenceTracker, findNewPartsSinceBatch };
