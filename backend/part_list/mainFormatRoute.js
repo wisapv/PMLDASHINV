@@ -9,7 +9,7 @@ const { buildMatchKey } = require('../lib/keyUtils');
 const { getPreviousTgRows } = require('../lib/batches');
 const { validateGroupPrefix, getStoredGroupPrefix, setStoredGroupPrefix, recordGroupPrefixUsage } = require('../lib/groupPrefix');
 const { emitEvent, EVENTS } = require('../lib/socketHub');
-const { blankOrTrim } = require('../lib/textUtils');
+const { blankOrTrim, toExcelCellValue } = require('../lib/textUtils');
 
 const router = express.Router();
 
@@ -179,6 +179,9 @@ async function handleDownloadMain(req, res) {
     const wsTemplate = wbTemplate.Sheets[wbTemplate.SheetNames[0]];
     const header = xlsx.utils.sheet_to_json(wsTemplate, { header: 1 }).slice(0, 5);
 
+    // .map(toExcelCellValue) here — not inside blankOrTrim — is the
+    // aoa_to_sheet write boundary: it turns blankOrTrim's `''` back into
+    // `null` so Excel sees a genuinely absent cell, not a blank string cell.
     const generateDataRow = (t, p) => [
       "AA", "B", blankOrTrim(t['Group']), "6", blankOrTrim(p['PART #'] || p['PART # ']).substring(0, 10),
       blankOrTrim(p['Suffix No']), blankOrTrim(p['COMP']), "S", blankOrTrim(p['Production Routing'] || p['Production Routing ']),
@@ -188,7 +191,7 @@ async function handleDownloadMain(req, res) {
       blankOrTrim(p['V.SHARE FLG[SYS L/O DATE BASIS]']), blankOrTrim(p['V.SHARE VALUE']),
       blankOrTrim(p['ORD Method']), blankOrTrim(p['QTY /CONT']), blankOrTrim(p['PACK QTY/CONT']),
       "3", blankOrTrim(p['PART DESC'])
-    ];
+    ].map(toExcelCellValue);
 
     if (selectedGroups.length === 1) {
       const groupName = selectedGroups[0];
@@ -287,7 +290,10 @@ async function handleDownloadNewParts(req, res) {
     const wbTemplate = xlsx.readFile(templatePath);
     const wsTemplate = wbTemplate.Sheets[wbTemplate.SheetNames[0]];
     const header = xlsx.utils.sheet_to_json(wsTemplate, { header: 1 }).slice(0, 5);
-    const dataRows = newPartsRows.map((row) => Object.values(row));
+    // Same aoa_to_sheet write-boundary conversion as generateDataRow above:
+    // newPartsRows is built from buildMainFormatRows' blankOrTrim(...) row
+    // objects, so '' needs to become null here before it reaches the sheet.
+    const dataRows = newPartsRows.map((row) => Object.values(row).map(toExcelCellValue));
 
     res.setHeader('Content-Disposition', `attachment; filename=NewParts_${batchId}.xlsx`);
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');

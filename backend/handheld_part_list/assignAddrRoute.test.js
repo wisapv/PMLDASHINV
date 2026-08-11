@@ -1,6 +1,7 @@
 const test = require('node:test');
 const assert = require('node:assert');
-const { evaluatePicAndShop } = require('./assignAddrRoute');
+const xlsx = require('xlsx');
+const { evaluatePicAndShop, generateExcelBuffer } = require('./assignAddrRoute');
 
 // Mirrors the Group formula in createFinalRow('SR481D' + finalShop + source) so
 // the test can confirm Group follows the fixed Shop value without duplicating logic.
@@ -46,4 +47,23 @@ test('evaluatePicAndShop: regression — dock-based shouldDup:true branches unch
 test('evaluatePicAndShop: regression — PC/WH address-based shouldDup:true branch unchanged', () => {
   assert.strictEqual(evaluatePicAndShop('PC01', '', '').shouldDup, true);
   assert.strictEqual(evaluatePicAndShop('WH01', '', '').shouldDup, true);
+});
+
+test('generateExcelBuffer: a blank ("") field value writes a genuinely absent cell, not an empty-string cell', () => {
+  // Stands in for what /export-excel actually receives: rows the client
+  // posts back, built from this route's own blankOrTrim(...) preview data,
+  // where a blank field is already reduced to ''.
+  const dataRows = [
+    { Shop: 'A', Group: 'SR481DA1', Dock: 'ZZ', Supplier: '', 'Part no.': '123456789012' },
+  ];
+
+  const buffer = generateExcelBuffer(dataRows);
+  const wb = xlsx.read(buffer, { type: 'buffer' });
+  const ws = wb.Sheets[wb.SheetNames[0]];
+
+  // Header row 1, data row 2. Columns in insertion order: Shop(A), Group(B),
+  // Dock(C), Supplier(D), Part no.(E).
+  assert.strictEqual(ws['D2'], undefined, 'blank field must produce a genuinely absent cell, not an empty-string cell');
+  // Sanity check: a real, non-blank field in the same row is still a real cell.
+  assert.strictEqual(ws['C2'].v, 'ZZ');
 });

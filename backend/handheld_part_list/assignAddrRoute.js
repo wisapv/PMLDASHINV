@@ -9,7 +9,7 @@ const { parseExcelDate } = require('../lib/dateUtils');
 const { getField } = require('../lib/fieldAliases');
 const { getStoredGroupPrefix } = require('../lib/groupPrefix');
 const { emitEvent, EVENTS } = require('../lib/socketHub');
-const { blankOrTrim } = require('../lib/textUtils');
+const { blankOrTrim, toExcelCellValue } = require('../lib/textUtils');
 const router = express.Router();
 const upload = multer({ storage: multer.memoryStorage() });
 
@@ -52,9 +52,18 @@ const evaluatePicAndShop = (addrStr, dock, supplier) => {
     return { pic: 'A', shop, shouldDup: false };
 };
 
+// json_to_sheet has the same '' vs null quirk as aoa_to_sheet (see
+// toExcelCellValue), so this is the write boundary for the Handheld export:
+// dataRows here is whatever the client posts back (built from this route's
+// own blankOrTrim(...) preview data), so '' needs converting to null right
+// before it reaches json_to_sheet.
+const toExcelRow = (row) => Object.fromEntries(
+    Object.entries(row).map(([key, value]) => [key, toExcelCellValue(value)])
+);
+
 const generateExcelBuffer = (dataRows) => {
     const wb = xlsx.utils.book_new();
-    const ws = xlsx.utils.json_to_sheet(dataRows);
+    const ws = xlsx.utils.json_to_sheet(dataRows.map(toExcelRow));
     xlsx.utils.book_append_sheet(wb, ws, "Handheld_Format");
     return xlsx.write(wb, { type: 'buffer', bookType: 'xlsx' });
 };
@@ -246,3 +255,4 @@ router.post('/process-assign-addr', upload.single('file'), handleProcessAssignAd
 module.exports = router;
 module.exports.evaluatePicAndShop = evaluatePicAndShop;
 module.exports.handleProcessAssignAddr = handleProcessAssignAddr;
+module.exports.generateExcelBuffer = generateExcelBuffer;

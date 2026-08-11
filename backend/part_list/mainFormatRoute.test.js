@@ -506,6 +506,75 @@ test('a Part Procurement field containing only a space produces a true empty str
   }
 });
 
+test('handleDownloadMain: a whitespace-only Part Procurement field writes a genuinely absent cell, not an empty-string cell (Pivot Table blank-count fix)', async () => {
+  const batchId = 'TEST-XLSX-BLANKCELL-' + Date.now();
+  const db = await connectDB();
+  const now = new Date().toISOString();
+  await db.run('INSERT OR IGNORE INTO upload_batches (batch_id, upload_date) VALUES (?, ?)', [batchId, now]);
+
+  const tgRow = {
+    'Part No 12 Digits': '123456789012',
+    'Supplier': 'SUPX',
+    'Dock IH routing': 'ZZ',
+    'Source': '1',
+  };
+  await db.run(
+    'INSERT INTO target_ro (batch_id, key_tg, data, upload_at) VALUES (?, ?, ?, ?)',
+    [batchId, 'RAW', JSON.stringify(tgRow), now]
+  );
+
+  // COMP is whitespace-only — blankOrTrim reduces it to '' for the JSON
+  // preview, but the written .xlsx must not carry that '' into a real cell.
+  const ppRow = {
+    'T/C TO (UNL)': '20991231',
+    'DOCK': 'ZZ',
+    'Production Routing': '',
+    'PART #': '123456789012',
+    'PART DESC': 'TEST PART',
+    'COMP': '   ',
+    'SUPL': 'SUPX',
+    'PLANT': 'P1',
+    'S.DOCK': 'SD1',
+    'KBN': 'K1',
+    'Model Name': 'MODL',
+    'Life Cycle Code': 'L1',
+    'V.SHARE FLG[SYS L/O DATE BASIS]': 'V1',
+    'V.SHARE VALUE': 'VV1',
+    'ORD Method': 'OM1',
+    'QTY /CONT': '10',
+    'PACK QTY/CONT': '20',
+  };
+  await db.run(
+    'INSERT INTO part_procurement (batch_id, key_pp, data, upload_at) VALUES (?, ?, ?, ?)',
+    [batchId, 'RAW', JSON.stringify(ppRow), now]
+  );
+
+  try {
+    const previewRes = mockRes();
+    await handlePreviewMain({ query: { batchId, prefix: 'BLANKCELL' } }, previewRes);
+    // Preview/JSON output is unaffected by this fix — still a true empty string.
+    assert.strictEqual(previewRes.body.data[0]['Receiving company*'], '');
+
+    const downloadRes = mockRes();
+    await handleDownloadMain({ query: { batchId, groups: 'BLANKCELLA1' } }, downloadRes);
+    const wb = xlsx.read(downloadRes.body, { type: 'buffer' });
+    const ws = wb.Sheets[wb.SheetNames[0]];
+
+    // 5 template header rows precede the data row, so the data row is sheet
+    // row 6. "Receiving company*" (COMP) is column index 6 => column G.
+    // Reading the raw cell (not via sheet_to_json's defval sugar) is the
+    // point: a present-but-empty-string cell and a genuinely absent cell
+    // both stringify to '' through defval, but only one is what Excel's
+    // Pivot Table treats as blank.
+    assert.strictEqual(ws['G6'], undefined, 'blank field must produce a genuinely absent cell, not an empty-string cell');
+    // Sanity check: a real, non-blank field in the same row is still a real cell.
+    assert.strictEqual(ws['K6'].v, 'SUPX'); // Supplier*
+  } finally {
+    await cleanupBatch(batchId);
+    await cleanupPrefixHistory('BLANKCELL');
+  }
+});
+
 test('handlePreviewMain: two target_ro rows with identical Dock IH routing + Part No (same keyTG) collapse to one, keeping the first seen; a genuinely different part is untouched', async () => {
   const batchId = 'TEST-DEDUP-PREVIEW-' + Date.now();
   await seedBatchWithDuplicateTgRows(batchId);
@@ -862,6 +931,38 @@ test('handleDownloadNewParts: produces a .xlsx with the same 27-column Main Form
     await cleanupBatch(previousBatchId);
     await cleanupBatch(currentBatchId);
     await cleanupPrefixHistory('DLNEWPFX');
+  }
+});
+
+test('handleDownloadNewParts: a whitespace-only Part Procurement field also writes a genuinely absent cell, not an empty-string cell', async () => {
+  const previousBatchId = 'TEST-DLNEWPARTS-BLANKCELL-PREV-' + Date.now();
+  const currentBatchId = 'TEST-DLNEWPARTS-BLANKCELL-CUR-' + Date.now();
+
+  try {
+    await preCreateBatchAt(previousBatchId, '2099-01-01T00:00:00.000Z');
+    await seedTgRows(previousBatchId, []);
+
+    await preCreateBatchAt(currentBatchId, '2099-02-01T00:00:00.000Z');
+    await seedTgRows(currentBatchId, [
+      { 'Part No 12 Digits': '333333333333', 'Supplier': 'ABC', 'Dock IH routing': 'SW', 'Source': '1' },
+    ]);
+    // COMP is whitespace-only, same as the handleDownloadMain blank-cell test.
+    await seedPpRows(currentBatchId, [
+      { ...ppRowFor('SW', '333333333333'), 'COMP': '   ' },
+    ]);
+
+    const res = mockRes();
+    await handleDownloadNewParts({ query: { batchId: currentBatchId } }, res);
+
+    assert.strictEqual(res.statusCode, 200);
+    const wb = xlsx.read(res.body, { type: 'buffer' });
+    const ws = wb.Sheets[wb.SheetNames[0]];
+    // Same layout as handleDownloadMain: data starts at row 6, COMP is
+    // column index 6 => column G.
+    assert.strictEqual(ws['G6'], undefined, 'blank field must produce a genuinely absent cell, not an empty-string cell');
+  } finally {
+    await cleanupBatch(previousBatchId);
+    await cleanupBatch(currentBatchId);
   }
 });
 
