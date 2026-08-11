@@ -1,13 +1,63 @@
 const test = require('node:test');
 const assert = require('node:assert');
 const xlsx = require('xlsx');
-const { evaluatePicAndShop, generateExcelBuffer } = require('./assignAddrRoute');
+const { connectDB, initDB } = require('../database');
+const { evaluatePicAndShop, generateExcelBuffer, handleProcessAssignAddr } = require('./assignAddrRoute');
 
 // Mirrors the Group formula in createFinalRow('SR481D' + finalShop + source) so
 // the test can confirm Group follows the fixed Shop value without duplicating logic.
 function group(shop, source) {
   return 'SR481D' + shop + source;
 }
+
+function bufferFromAoa(aoa) {
+  const wb = xlsx.utils.book_new();
+  const ws = xlsx.utils.aoa_to_sheet(aoa);
+  xlsx.utils.book_append_sheet(wb, ws, 'Sheet1');
+  return xlsx.write(wb, { type: 'buffer', bookType: 'xlsx' });
+}
+
+function mockRes() {
+  return {
+    statusCode: 200,
+    body: undefined,
+    headers: {},
+    status(code) { this.statusCode = code; return this; },
+    json(payload) { this.body = JSON.parse(JSON.stringify(payload)); return this; },
+    setHeader(key, value) { this.headers[key] = value; },
+    send(buf) { this.body = buf; return this; },
+  };
+}
+
+async function seedBatch(batchId, { partNo, dock = 'ZZ', supplier = 'SUPX', source = '1', partDesc = 'TEST PART', kbn = 'K1' } = {}) {
+  const db = await connectDB();
+  const now = new Date().toISOString();
+  await db.run('INSERT OR IGNORE INTO upload_batches (batch_id, upload_date) VALUES (?, ?)', [batchId, now]);
+  await db.run(
+    'INSERT INTO target_ro (batch_id, key_tg, data, upload_at) VALUES (?, ?, ?, ?)',
+    [batchId, 'RAW', JSON.stringify({ 'Part No 12 Digits': partNo, 'Supplier': supplier, 'Dock IH routing': dock, 'Source': source }), now]
+  );
+  await db.run(
+    'INSERT INTO part_procurement (batch_id, key_pp, data, upload_at) VALUES (?, ?, ?, ?)',
+    [batchId, 'RAW', JSON.stringify({
+      'T/C TO (UNL)': '20991231', 'DOCK': dock, 'Production Routing': '', 'PART #': partNo,
+      'PART DESC': partDesc, 'COMP': 'C1', 'SUPL': supplier, 'PLANT': 'P1', 'S.DOCK': 'SD1', 'KBN': kbn,
+      'Model Name': 'MODL', 'Life Cycle Code': 'L1', 'V.SHARE FLG[SYS L/O DATE BASIS]': 'V1', 'V.SHARE VALUE': 'VV1',
+      'ORD Method': 'OM1', 'QTY /CONT': '10', 'PACK QTY/CONT': '20',
+    }), now]
+  );
+}
+
+async function cleanupBatch(batchId) {
+  const db = await connectDB();
+  await db.run('DELETE FROM target_ro WHERE batch_id = ?', batchId);
+  await db.run('DELETE FROM part_procurement WHERE batch_id = ?', batchId);
+  await db.run('DELETE FROM upload_batches WHERE batch_id = ?', batchId);
+}
+
+test.before(async () => {
+  await initDB();
+});
 
 test('evaluatePicAndShop: ALS-triggering address has shouldDup === false', () => {
   const result = evaluatePicAndShop('SXX01', '', '');
@@ -37,11 +87,17 @@ test('evaluatePicAndShop: Lineside address evaluates its own shop independently 
   assert.notStrictEqual(linesideGroup, kanbanGroup);
 });
 
-test('evaluatePicAndShop: regression — dock-based shouldDup:true branches unchanged', () => {
+test('evaluatePicAndShop: regression — W/T dock-based shouldDup:true branches unchanged', () => {
   assert.strictEqual(evaluatePicAndShop('ANY', 'SW', '').shouldDup, true);
   assert.strictEqual(evaluatePicAndShop('ANY', 'S9', '').shouldDup, true);
   assert.strictEqual(evaluatePicAndShop('ANY', 'ST', '').shouldDup, true);
-  assert.strictEqual(evaluatePicAndShop('ANY', 'SK', '').shouldDup, true);
+});
+
+test('evaluatePicAndShop: SK dock (Shop K) no longer duplicates into a Lineside row', () => {
+  const result = evaluatePicAndShop('ANY', 'SK', '');
+  assert.strictEqual(result.pic, 'K');
+  assert.strictEqual(result.shop, 'K');
+  assert.strictEqual(result.shouldDup, false);
 });
 
 test('evaluatePicAndShop: regression — PC/WH address-based shouldDup:true branch unchanged', () => {
@@ -66,4 +122,125 @@ test('generateExcelBuffer: a blank ("") field value writes a genuinely absent ce
   assert.strictEqual(ws['D2'], undefined, 'blank field must produce a genuinely absent cell, not an empty-string cell');
   // Sanity check: a real, non-blank field in the same row is still a real cell.
   assert.strictEqual(ws['C2'].v, 'ZZ');
+});
+
+const ADDR_HEADERS = ['T/C FROM (UNL)', 'T/C TO (UNL)', 'DOCK', 'PART #', 'Kanban Print Address', 'Lineside Address', 'PART DESC'];
+
+test('handleProcessAssignAddr: two time-overlapping valid Address Master rows for the same part both produce output rows (real 692050K110C0 example)', async () => {
+  const batchId = 'TEST-ADDR-MULTIROW-' + Date.now();
+  const partNo = '692050K110C0';
+  await seedBatch(batchId, { partNo, dock: 'ZZ' });
+
+  try {
+    // Mirrors the real Address Master data that surfaced this bug: both rows
+    // are valid today (T/C TO = 99991231, no expiry) and represent two
+    // genuinely different physical delivery points for the same part.
+    const addrRows = [
+      ['20181029', '99991231', 'ZZ', partNo, 'DO1 - R11', 'DO1 - R11', 'TEST PART'],
+      ['20251014', '99991231', 'ZZ', partNo, 'SBP - L03', 'BP1 - R07', 'TEST PART'],
+    ];
+    const addrBuffer = bufferFromAoa([ADDR_HEADERS, ...addrRows]);
+
+    const res = mockRes();
+    await handleProcessAssignAddr({ file: { buffer: addrBuffer }, body: { batchId } }, res);
+
+    assert.strictEqual(res.statusCode, 200);
+    assert.strictEqual(res.body.hold.length, 0);
+    assert.strictEqual(res.body.data.length, 2, 'both DO1 and SBP rows must be present, not just one');
+    assert.deepStrictEqual(res.body.data.map((r) => r.Addr).sort(), ['DO1 - R11', 'SBP - L03']);
+  } finally {
+    await cleanupBatch(batchId);
+  }
+});
+
+test('handleProcessAssignAddr: an expired Address Master row alongside a valid row for the same key only produces output for the valid one', async () => {
+  const batchId = 'TEST-ADDR-EXPIRED-' + Date.now();
+  const partNo = '777777777777';
+  await seedBatch(batchId, { partNo, dock: 'ZZ' });
+
+  try {
+    const addrRows = [
+      ['20180101', '20200101', 'ZZ', partNo, 'WH-EXPIRED', '', 'TEST PART'], // today is outside this window
+      ['20180101', '99991231', 'ZZ', partNo, 'WH01', '', 'TEST PART'],
+    ];
+    const addrBuffer = bufferFromAoa([ADDR_HEADERS, ...addrRows]);
+
+    const res = mockRes();
+    await handleProcessAssignAddr({ file: { buffer: addrBuffer }, body: { batchId } }, res);
+
+    assert.strictEqual(res.statusCode, 200);
+    assert.strictEqual(res.body.data.length, 1);
+    assert.strictEqual(res.body.data[0].Addr, 'WH01');
+  } finally {
+    await cleanupBatch(batchId);
+  }
+});
+
+test('handleProcessAssignAddr: Kanban Print Address equal to Lineside Address (case/whitespace-insensitive) in a shouldDup group produces exactly one row', async () => {
+  const batchId = 'TEST-ADDR-KANBANEQLINESIDE-' + Date.now();
+  const partNo = '888888888888';
+  await seedBatch(batchId, { partNo, dock: 'ZZ' });
+
+  try {
+    // PC prefix -> shouldDup group. Lineside differs from Kanban only by case/whitespace.
+    const addrRows = [
+      ['20180101', '99991231', 'ZZ', partNo, 'PC01', ' pc01 ', 'TEST PART'],
+    ];
+    const addrBuffer = bufferFromAoa([ADDR_HEADERS, ...addrRows]);
+
+    const res = mockRes();
+    await handleProcessAssignAddr({ file: { buffer: addrBuffer }, body: { batchId } }, res);
+
+    assert.strictEqual(res.statusCode, 200);
+    assert.strictEqual(res.body.data.length, 1, 'Kanban === Lineside must not produce a duplicate Lineside row');
+    assert.strictEqual(res.body.data[0].PIC, 'PC');
+  } finally {
+    await cleanupBatch(batchId);
+  }
+});
+
+test('handleProcessAssignAddr: Kanban Print Address different from Lineside Address in a shouldDup group still produces two rows (regression)', async () => {
+  const batchId = 'TEST-ADDR-KANBANNELINESIDE-' + Date.now();
+  const partNo = '000111222333';
+  await seedBatch(batchId, { partNo, dock: 'ZZ' });
+
+  try {
+    const addrRows = [
+      ['20180101', '99991231', 'ZZ', partNo, 'PC01', 'R.LINE1', 'TEST PART'],
+    ];
+    const addrBuffer = bufferFromAoa([ADDR_HEADERS, ...addrRows]);
+
+    const res = mockRes();
+    await handleProcessAssignAddr({ file: { buffer: addrBuffer }, body: { batchId } }, res);
+
+    assert.strictEqual(res.statusCode, 200);
+    assert.strictEqual(res.body.data.length, 2);
+    assert.deepStrictEqual(res.body.data.map((r) => r.PIC).sort(), ['PC', 'R']);
+  } finally {
+    await cleanupBatch(batchId);
+  }
+});
+
+test('handleProcessAssignAddr: a key with zero valid Address Master rows (all expired) still goes to Hold, unchanged from today', async () => {
+  const batchId = 'TEST-ADDR-ALLEXPIRED-' + Date.now();
+  const partNo = '444555666777';
+  await seedBatch(batchId, { partNo, dock: 'ZZ' });
+
+  try {
+    const addrRows = [
+      ['20180101', '20200101', 'ZZ', partNo, 'WH01', '', 'TEST PART'], // expired
+    ];
+    const addrBuffer = bufferFromAoa([ADDR_HEADERS, ...addrRows]);
+
+    const res = mockRes();
+    await handleProcessAssignAddr({ file: { buffer: addrBuffer }, body: { batchId } }, res);
+
+    assert.strictEqual(res.statusCode, 200);
+    assert.strictEqual(res.body.data.length, 0);
+    assert.strictEqual(res.body.hold.length, 1);
+    assert.strictEqual(res.body.hold[0]['Part No'], partNo);
+    assert.strictEqual(res.body.hold[0]['Reason'], 'Missing in Address Master');
+  } finally {
+    await cleanupBatch(batchId);
+  }
 });

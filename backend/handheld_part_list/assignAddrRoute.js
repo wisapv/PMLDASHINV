@@ -25,7 +25,7 @@ const evaluatePicAndShop = (addrStr, dock, supplier) => {
     // 2. T
     if (dock === 'ST') return { pic: 'T', shop: 'T', shouldDup: true };
     // 3. K
-    if (dock === 'SK') return { pic: 'K', shop: 'K', shouldDup: true };
+    if (dock === 'SK') return { pic: 'K', shop: 'K', shouldDup: false };
 
     // 4. TTAT
     if (dock === 'S6') {
@@ -103,22 +103,31 @@ async function handleProcessAssignAddr(req, res) {
         const addrSheet = addrWorkbook.Sheets[addrWorkbook.SheetNames[0]];
         const addrRaw = xlsx.utils.sheet_to_json(addrSheet);
         
+        // Unlike Part Procurement (single active row per key), Address Master can
+        // legitimately have multiple time-overlapping valid rows for the same
+        // Dock+PartNo — genuinely different physical delivery/kanban points, not
+        // sequential revisions. So addrMap is key -> row[], not key -> row; every
+        // row whose [T/C FROM, T/C TO] window contains today is kept, not just the
+        // last one parsed.
         const addrMap = new Map();
         const partNameAddrLookup = new Map();
 
         addrRaw.forEach(row => {
+            const fromDate = parseExcelDate(row['T/C FROM (UNL)']);
             const toDate = parseExcelDate(row['T/C TO (UNL)']);
-            if (toDate > today) {
-                const dock = String(row['DOCK'] || '').replace(/\s/g, '');
-                const partNo = String(row['PART #'] || '').replace(/\s/g, '');
-                const keyAddr = (dock + partNo).replace(/-/g, ''); 
-                
-                addrMap.set(keyAddr, row);
+            const isActive = !isNaN(fromDate) && !isNaN(toDate) && fromDate <= today && today <= toDate;
+            if (!isActive) return;
 
-                const partNameKey = String(row['PART DESC'] || row['PART NAME'] || '').trim().toUpperCase();
-                if (partNameKey) {
-                    partNameAddrLookup.set(partNameKey, row);
-                }
+            const dock = String(row['DOCK'] || '').replace(/\s/g, '');
+            const partNo = String(row['PART #'] || '').replace(/\s/g, '');
+            const keyAddr = (dock + partNo).replace(/-/g, '');
+
+            if (!addrMap.has(keyAddr)) addrMap.set(keyAddr, []);
+            addrMap.get(keyAddr).push(row);
+
+            const partNameKey = String(row['PART DESC'] || row['PART NAME'] || '').trim().toUpperCase();
+            if (partNameKey) {
+                partNameAddrLookup.set(partNameKey, row);
             }
         });
 
@@ -174,16 +183,17 @@ async function handleProcessAssignAddr(req, res) {
             const ppPartNo = String(p['PART #'] || p['PART # '] || '').replace(/\s/g, '');
             const addrLookupKey = (ppDockValue + ppPartNo).replace(/-/g, '');
             
-            let addrInfo = addrMap.get(addrLookupKey);
-            
-            if (!addrInfo) {
+            let addrInfoList = addrMap.get(addrLookupKey);
+
+            if (!addrInfoList || addrInfoList.length === 0) {
                 const partNameKey = String(p['PART DESC'] || p['PART DESC '] || '').trim().toUpperCase();
-                addrInfo = partNameAddrLookup.get(partNameKey);
+                const fallback = partNameAddrLookup.get(partNameKey);
+                addrInfoList = fallback ? [fallback] : [];
             }
 
             const ppDock = String(p['DOCK'] || p['DOCK '] || '').trim();
 
-            if (!addrInfo) {
+            if (addrInfoList.length === 0) {
                 holdData.push({
                     "Dock": ppDock,
                     "Supplier": blankOrTrim(p['SUPL'] || p['SUPL ']),
@@ -196,11 +206,6 @@ async function handleProcessAssignAddr(req, res) {
 
             const source = String(t['Source'] || t['Source '] || '').trim();
             const ppSupplier = String(p['SUPL'] || p['SUPL '] || '').trim();
-            
-            const kanbanAddrRaw = String(addrInfo['Kanban Print Address'] || '').trim().toUpperCase();
-            const linesideAddrRaw = String(addrInfo['Lineside Address'] || '').trim().toUpperCase();
-
-            const kanbanEval = evaluatePicAndShop(kanbanAddrRaw, ppDock, ppSupplier);
 
             const createFinalRow = (address, picType, finalShop, isLineside = false) => {
                 // 🔴 จุดแก้ไข: เช็คว่าถ้า PIC เป็น A, R, K ให้ตัด 3 ตัวเลย
@@ -231,13 +236,29 @@ async function handleProcessAssignAddr(req, res) {
                 };
             };
 
-            if (kanbanAddrRaw) {
-                finalData.push(createFinalRow(kanbanAddrRaw, kanbanEval.pic, kanbanEval.shop, false));
-            }
-            
-            if (kanbanEval.shouldDup && linesideAddrRaw) {
-                const linesideEval = evaluatePicAndShop(linesideAddrRaw, ppDock, ppSupplier);
-                finalData.push(createFinalRow(linesideAddrRaw, linesideEval.pic, linesideEval.shop, true));
+            // Address Master can have multiple time-overlapping valid rows for
+            // this same part (genuinely different physical delivery/kanban
+            // points, not sequential revisions) — each is processed
+            // independently, so one part can produce more than one Kanban(+
+            // Lineside) pair of output rows.
+            for (const addrInfo of addrInfoList) {
+                const kanbanAddrRaw = String(addrInfo['Kanban Print Address'] || '').trim().toUpperCase();
+                const linesideAddrRaw = String(addrInfo['Lineside Address'] || '').trim().toUpperCase();
+
+                const kanbanEval = evaluatePicAndShop(kanbanAddrRaw, ppDock, ppSupplier);
+
+                if (kanbanAddrRaw) {
+                    finalData.push(createFinalRow(kanbanAddrRaw, kanbanEval.pic, kanbanEval.shop, false));
+                }
+
+                // Only duplicate into a Lineside row when the group calls for it
+                // AND the Lineside Address genuinely differs from the Kanban
+                // Print Address for this same entry — otherwise it's the same
+                // physical point counted twice.
+                if (kanbanEval.shouldDup && linesideAddrRaw && linesideAddrRaw !== kanbanAddrRaw) {
+                    const linesideEval = evaluatePicAndShop(linesideAddrRaw, ppDock, ppSupplier);
+                    finalData.push(createFinalRow(linesideAddrRaw, linesideEval.pic, linesideEval.shop, true));
+                }
             }
         });
 
