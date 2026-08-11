@@ -378,8 +378,8 @@ test('preview-main, download-main, and process-assign-addr all use the same stor
     // 5 template header rows precede the data rows.
     assert.strictEqual(rows[5][2], expectedGroup);
 
-    const addrHeaders = ['T/C TO (UNL)', 'DOCK', 'PART #', 'Kanban Print Address', 'Lineside Address', 'PART DESC'];
-    const addrRow = ['20991231', 'ZZ', '123456789012', 'WH01', '', 'TEST PART'];
+    const addrHeaders = ['T/C FROM (UNL)', 'T/C TO (UNL)', 'DOCK', 'PART #', 'Kanban Print Address', 'Lineside Address', 'PART DESC'];
+    const addrRow = ['20180101', '20991231', 'ZZ', '123456789012', 'WH01', '', 'TEST PART'];
     const addrBuffer = bufferFromAoa([addrHeaders, addrRow]);
 
     const assignRes = mockRes();
@@ -419,8 +419,8 @@ test('handleProcessAssignAddr: emits handheld:updated on success', async () => {
   initSocketHub({ emit: (name, payload) => emitted.push({ name, payload }) });
 
   try {
-    const addrHeaders = ['T/C TO (UNL)', 'DOCK', 'PART #', 'Kanban Print Address', 'Lineside Address', 'PART DESC'];
-    const addrRow = ['20991231', 'ZZ', '123456789012', 'WH01', '', 'TEST PART'];
+    const addrHeaders = ['T/C FROM (UNL)', 'T/C TO (UNL)', 'DOCK', 'PART #', 'Kanban Print Address', 'Lineside Address', 'PART DESC'];
+    const addrRow = ['20180101', '20991231', 'ZZ', '123456789012', 'WH01', '', 'TEST PART'];
     const addrBuffer = bufferFromAoa([addrHeaders, addrRow]);
 
     await handleProcessAssignAddr({ file: { buffer: addrBuffer }, body: { batchId } }, mockRes());
@@ -494,8 +494,8 @@ test('a Part Procurement field containing only a space produces a true empty str
     assert.strictEqual(dataRow[20], '');
     assert.strictEqual(dataRow[21], '');
 
-    const addrHeaders = ['T/C TO (UNL)', 'DOCK', 'PART #', 'Kanban Print Address', 'Lineside Address', 'PART DESC'];
-    const addrRow = ['20991231', 'ZZ', '123456789012', 'WH01', '', 'TEST PART'];
+    const addrHeaders = ['T/C FROM (UNL)', 'T/C TO (UNL)', 'DOCK', 'PART #', 'Kanban Print Address', 'Lineside Address', 'PART DESC'];
+    const addrRow = ['20180101', '20991231', 'ZZ', '123456789012', 'WH01', '', 'TEST PART'];
     const addrBuffer = bufferFromAoa([addrHeaders, addrRow]);
     const assignRes = mockRes();
     await handleProcessAssignAddr({ file: { buffer: addrBuffer }, body: { batchId } }, assignRes);
@@ -696,11 +696,11 @@ test('handleProcessAssignAddr: the new keyTG dedup composes correctly with the e
   }
 
   try {
-    const addrHeaders = ['T/C TO (UNL)', 'DOCK', 'PART #', 'Kanban Print Address', 'Lineside Address', 'PART DESC'];
+    const addrHeaders = ['T/C FROM (UNL)', 'T/C TO (UNL)', 'DOCK', 'PART #', 'Kanban Print Address', 'Lineside Address', 'PART DESC'];
     const addrRows = [
-      ['20991231', 'SUPD', 'AAAAAAAAAAAA', 'WH01', '', 'PART A'],
-      ['20991231', 'ZZ', 'BBBBBBBBBBBB', 'WH02', '', 'PART B'],
-      ['20991231', 'YY', 'CCCCCCCCCCCC', 'WH03', '', 'PART C'],
+      ['20180101', '20991231', 'SUPD', 'AAAAAAAAAAAA', 'WH01', '', 'PART A'],
+      ['20180101', '20991231', 'ZZ', 'BBBBBBBBBBBB', 'WH02', '', 'PART B'],
+      ['20180101', '20991231', 'YY', 'CCCCCCCCCCCC', 'WH03', '', 'PART C'],
     ];
     const addrBuffer = bufferFromAoa([addrHeaders, ...addrRows]);
 
