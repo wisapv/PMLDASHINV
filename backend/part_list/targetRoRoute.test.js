@@ -4,7 +4,6 @@ const xlsx = require('xlsx');
 const { initDB, connectDB } = require('../database');
 const { initSocketHub, EVENTS } = require('../lib/socketHub');
 const { handleTargetRoUpload, handleDownloadNewParts } = require('./targetRoRoute');
-const { setBaselineBatch } = require('../lib/batches');
 
 function bufferFromAoa(aoa) {
   const wb = xlsx.utils.book_new();
@@ -140,88 +139,18 @@ test('handleTargetRoUpload: emits batch:uploadUpdated on success', async () => {
   }
 });
 
-test('handleTargetRoUpload: first-ever batch (no previous batch to compare against) flags every valid row as new', async () => {
-  const batchId = 'TEST-TG-NEWPARTS-FIRST-' + Date.now();
+test('handleTargetRoUpload: response no longer includes a newParts field — new-parts detection now surfaces at Merge time instead', async () => {
+  const batchId = 'TEST-TG-NONEWPARTS-' + Date.now();
   const headers = ['Part No 12 Digits', 'Supplier', 'Dock IH routing', 'Source'];
-  const rows = [
-    ['111111111111', 'ABC', 'SW', '1'],
-    ['222222222222', 'ABC', 'ST', '1'],
-    ['', 'ABC', 'SW', '1'], // blank part no — invalid, must not be flagged
-  ];
-  const buffer = bufferFromAoa([headers, ...rows]);
+  const buffer = bufferFromAoa([headers, ['123456789012', 'ABC', 'SW', '1']]);
 
   try {
     const res = mockRes();
     await handleTargetRoUpload(mockReq(buffer, batchId), res);
     assert.strictEqual(res.statusCode, 200);
-    assert.strictEqual(res.body.newParts.length, 2);
-    assert.deepStrictEqual(
-      res.body.newParts.map((r) => r['Part No 12 Digits']).sort(),
-      ['111111111111', '222222222222']
-    );
+    assert.strictEqual(Object.prototype.hasOwnProperty.call(res.body, 'newParts'), false);
   } finally {
     await cleanupBatch(batchId);
-  }
-});
-
-test('handleTargetRoUpload: a second batch only flags rows whose keyTG is not in the immediately-previous batch', async () => {
-  const previousBatchId = 'TEST-TG-NEWPARTS-PREV-' + Date.now();
-  const currentBatchId = 'TEST-TG-NEWPARTS-CUR-' + Date.now();
-  const headers = ['Part No 12 Digits', 'Supplier', 'Dock IH routing', 'Source'];
-
-  try {
-    await preCreateBatchAt(previousBatchId, '2099-01-01T00:00:00.000Z');
-    const previousBuffer = bufferFromAoa([headers, ['111111111111', 'ABC', 'SW', '1']]);
-    await handleTargetRoUpload(mockReq(previousBuffer, previousBatchId), mockRes());
-
-    await preCreateBatchAt(currentBatchId, '2099-02-01T00:00:00.000Z');
-    // Same part (111...) plus a genuinely new one (222...).
-    const currentBuffer = bufferFromAoa([headers, ['111111111111', 'ABC', 'SW', '1'], ['222222222222', 'ABC', 'SW', '1']]);
-    const res = mockRes();
-    await handleTargetRoUpload(mockReq(currentBuffer, currentBatchId), res);
-
-    assert.strictEqual(res.body.newParts.length, 1);
-    assert.strictEqual(res.body.newParts[0]['Part No 12 Digits'], '222222222222');
-  } finally {
-    await cleanupBatch(previousBatchId);
-    await cleanupBatch(currentBatchId);
-  }
-});
-
-test('handleTargetRoUpload: an explicitly-set baseline is preferred over the chronologically-previous batch', async () => {
-  const oldestBatchId = 'TEST-TG-NEWPARTS-BASE-' + Date.now();
-  const middleBatchId = 'TEST-TG-NEWPARTS-MID-' + Date.now();
-  const currentBatchId = 'TEST-TG-NEWPARTS-CUR2-' + Date.now();
-  const headers = ['Part No 12 Digits', 'Supplier', 'Dock IH routing', 'Source'];
-
-  try {
-    // Oldest batch contains part 111 (the real reference point per the baseline).
-    await preCreateBatchAt(oldestBatchId, '2099-01-01T00:00:00.000Z');
-    const oldestBuffer = bufferFromAoa([headers, ['111111111111', 'ABC', 'SW', '1']]);
-    await handleTargetRoUpload(mockReq(oldestBuffer, oldestBatchId), mockRes());
-
-    // Middle (chronologically-previous) batch contains only an unrelated part.
-    await preCreateBatchAt(middleBatchId, '2099-02-01T00:00:00.000Z');
-    const middleBuffer = bufferFromAoa([headers, ['999999999999', 'ABC', 'SW', '1']]);
-    await handleTargetRoUpload(mockReq(middleBuffer, middleBatchId), mockRes());
-
-    const db = await connectDB();
-    await setBaselineBatch(db, oldestBatchId);
-
-    await preCreateBatchAt(currentBatchId, '2099-03-01T00:00:00.000Z');
-    // Current batch re-includes 111 (present in the baseline) plus a genuinely new 222.
-    const currentBuffer = bufferFromAoa([headers, ['111111111111', 'ABC', 'SW', '1'], ['222222222222', 'ABC', 'SW', '1']]);
-    const res = mockRes();
-    await handleTargetRoUpload(mockReq(currentBuffer, currentBatchId), res);
-
-    // Without the baseline, 111 would also show as new (it isn't in "middle").
-    // With the baseline preferred, only 222 is genuinely new.
-    assert.strictEqual(res.body.newParts.length, 1);
-    assert.strictEqual(res.body.newParts[0]['Part No 12 Digits'], '222222222222');
-  } finally {
-    await cleanupBatch(oldestBatchId);
-    await cleanupBatch(middleBatchId);
-    await cleanupBatch(currentBatchId);
   }
 });
 

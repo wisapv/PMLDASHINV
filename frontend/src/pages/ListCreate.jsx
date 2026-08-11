@@ -113,6 +113,7 @@ const ListCreate = ({ activeTab, setUploadTab }) => {
       if (response.ok && result.data && result.data.length > 0) {
         setPreviewData(result.data);
         setTbosRemindData(result.remind || []);
+        setNewPartsData(result.newParts || []);
         const uniqueGroups = [...new Set(result.data.map((item) => item['Group ID*']))].filter(Boolean);
         setDownloadFiles(uniqueGroups.map((grp, index) => ({ id: `grp_${index}`, label: `Group: ${grp}`, value: grp, isChecked: true })));
       }
@@ -340,7 +341,6 @@ const ListCreate = ({ activeTab, setUploadTab }) => {
         const result = await response.json();
         setUploadStatus(prev => ({ ...prev, target: true }));
         showDuplicateHeaderWarning(result);
-        setNewPartsData(result.newParts || []);
         setStep('idle');
         fetchHistory();
       }
@@ -381,6 +381,7 @@ const ListCreate = ({ activeTab, setUploadTab }) => {
       if (response.ok) {
         setPreviewData(result.data);
         setTbosRemindData(result.remind || []);
+        setNewPartsData(result.newParts || []);
 
         const uniqueGroups = [...new Set(result.data.map(item => item['Group ID*']))].filter(Boolean);
         const dynamicGroupOptions = uniqueGroups.map((grp, index) => ({ id: `grp_${index}`, label: `Group: ${grp}`, value: grp, isChecked: true }));
@@ -439,44 +440,6 @@ const ListCreate = ({ activeTab, setUploadTab }) => {
 
           {subTab === 'new' && (activeBatchId || isViewingHistoricalBatch) && (
             <div className="flex flex-col gap-6 animate-in fade-in">
-              {newPartsData && newPartsData.length > 0 && (
-                <div className="bg-amber-50/50 border border-amber-100 rounded-4xl p-6 animate-in fade-in slide-in-from-bottom-4">
-                  <div className="flex items-center gap-2 text-amber-700 mb-4">
-                    <PackagePlus size={24} />
-                    <h3 className="font-bold text-lg">New Parts Since Last Batch</h3>
-                    <span className="ml-auto text-sm font-bold bg-amber-100 px-3 py-1.5 rounded-lg shadow-sm">Total: {newPartsData.length} items</span>
-                  </div>
-                  <p className="text-sm text-amber-700/80 mb-4">These parts weren't in the previous batch's Target R/O — they need to be registered in TBOS.</p>
-
-                  <div className="max-h-[300px] overflow-y-auto border border-amber-100 rounded-xl bg-white shadow-sm mb-4">
-                    <table className="w-full text-left text-[11px] whitespace-nowrap">
-                      <thead className="bg-amber-50 sticky top-0">
-                        <tr className="text-amber-700 uppercase tracking-wider">
-                          <th className="px-4 py-3 border-b border-amber-100">Part No</th>
-                          <th className="px-4 py-3 border-b border-amber-100">Part Name</th>
-                          <th className="px-4 py-3 border-b border-amber-100">Supplier</th>
-                          <th className="px-4 py-3 border-b border-amber-100">Dock IH</th>
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-amber-50">
-                        {newPartsData.map((r, i) => (
-                          <tr key={i} className="hover:bg-amber-50/30 transition-colors">
-                            <td className="px-4 py-3 font-mono text-ink">{r['Part No 12 Digits']}</td>
-                            <td className="px-4 py-3 text-ink">{r['Part Name'] || r['Part Description'] || ''}</td>
-                            <td className="px-4 py-3 text-ink">{r['Supplier']}</td>
-                            <td className="px-4 py-3 font-medium text-ink">{r['Dock IH routing']}</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-
-                  <button onClick={handleDownloadNewParts} className="bg-white border-2 border-amber-600 text-amber-700 px-6 py-2.5 rounded-xl font-bold hover:bg-amber-50 transition-colors flex items-center gap-2">
-                    <Download size={16} /> Download
-                  </button>
-                </div>
-              )}
-
               {(step === 'idle' || step === 'generating') && (
                 <div className="flex flex-col items-center gap-8">
                   <div className="w-full bg-white px-6 py-3 rounded-2xl border border-ink/5 shadow-[0_2px_10px_rgba(20,20,15,0.04)] flex justify-between items-center">
@@ -581,6 +544,48 @@ const ListCreate = ({ activeTab, setUploadTab }) => {
 
               {step === 'preview' && (
                 <div className="flex flex-col gap-6">
+                  {newPartsData && newPartsData.length > 0 && (
+                    <div className="bg-white rounded-4xl shadow-[0_2px_12px_rgba(20,20,15,0.04)] border border-ink/5 overflow-hidden animate-in fade-in slide-in-from-bottom-4">
+                      <div className="px-6 py-4 bg-lime-100/70 border-b border-lime-200">
+                        <div className="flex items-center gap-2 text-lime-800">
+                          <PackagePlus size={22} />
+                          <h3 className="font-bold text-lg">New Parts Since Last Batch</h3>
+                          <span className="ml-auto text-sm font-bold bg-lime-200 px-3 py-1.5 rounded-lg shadow-sm">Total: {newPartsData.length} items</span>
+                        </div>
+                        <p className="text-sm text-lime-800/80 mt-1">These parts weren't in the previous batch's Target R/O — they need to be registered in TBOS.</p>
+                      </div>
+
+                      <div className="p-6 flex flex-col gap-4">
+                        <div className="max-h-[300px] overflow-y-auto border border-ink/5 rounded-xl bg-white shadow-sm">
+                          <table className="w-full text-left text-[11px] whitespace-nowrap">
+                            <thead className="bg-[#FAFAF7] sticky top-0">
+                              <tr className="text-muted uppercase tracking-wider">
+                                <th className="px-4 py-3 border-b border-ink/5">Part No</th>
+                                <th className="px-4 py-3 border-b border-ink/5">Part Name</th>
+                                <th className="px-4 py-3 border-b border-ink/5">Supplier</th>
+                                <th className="px-4 py-3 border-b border-ink/5">Dock IH</th>
+                              </tr>
+                            </thead>
+                            <tbody className="divide-y divide-ink/5">
+                              {newPartsData.map((r, i) => (
+                                <tr key={i} className="hover:bg-[#FAFAF7]/50 transition-colors">
+                                  <td className="px-4 py-3 font-mono text-ink">{r['Part No 12 Digits']}</td>
+                                  <td className="px-4 py-3 text-ink">{r['Part Name'] || r['Part Description'] || ''}</td>
+                                  <td className="px-4 py-3 text-ink">{r['Supplier']}</td>
+                                  <td className="px-4 py-3 font-medium text-ink">{r['Dock IH routing']}</td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+
+                        <button onClick={handleDownloadNewParts} className="self-start bg-lime-700 text-white px-6 py-2.5 rounded-xl font-bold hover:bg-lime-800 transition-colors flex items-center gap-2 shadow-md">
+                          <Download size={16} /> Download New Parts
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
                   <div className="bg-white rounded-4xl shadow-[0_2px_12px_rgba(20,20,15,0.04)] border border-ink/5 overflow-hidden animate-in fade-in slide-in-from-bottom-4">
                     <div className="px-6 py-4 border-b border-ink/5 flex flex-col lg:flex-row justify-between items-start lg:items-center gap-4 bg-[#FAFAF7]">
                       <div className="flex flex-col">

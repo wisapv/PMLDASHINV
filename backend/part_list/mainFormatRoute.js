@@ -4,8 +4,9 @@ const xlsx = require('xlsx');
 const fs = require('fs');
 const path = require('path');
 const archiver = require('archiver');
-const { buildPpIndex, cleanTargetRow, computeShop, createFirstOccurrenceTracker } = require('../lib/partMatching');
+const { buildPpIndex, cleanTargetRow, computeShop, createFirstOccurrenceTracker, findNewPartsSinceBatch } = require('../lib/partMatching');
 const { buildMatchKey } = require('../lib/keyUtils');
+const { getPreviousTgRows } = require('../lib/batches');
 const { validateGroupPrefix, getStoredGroupPrefix, setStoredGroupPrefix, recordGroupPrefixUsage } = require('../lib/groupPrefix');
 const { emitEvent, EVENTS } = require('../lib/socketHub');
 const { blankOrTrim } = require('../lib/textUtils');
@@ -132,6 +133,13 @@ async function handlePreviewMain(req, res) {
 
     const { ppMap, allPpMap, duplicateKeys } = buildPpIndex(ppRows, { excludePartDesc: ['WHEEL ASSY'] });
 
+    // Surfaced to the user as part of the Merge results (alongside Remind/Hold),
+    // not at Target R/O upload time — reuses the same baseline/previous-batch
+    // resolution as the download endpoint, and the Target R/O rows already
+    // fetched above rather than re-querying them.
+    const previousTgRows = await getPreviousTgRows(db, batchId);
+    const newParts = findNewPartsSinceBatch(tgRows.map((r) => JSON.parse(r.data)), previousTgRows);
+
     const previewData = [];
     const remindData = []; // 🔴 สร้าง Array สำหรับข้อมูล Remind
     const isFirstOccurrence = createFirstOccurrenceTracker();
@@ -203,7 +211,7 @@ async function handlePreviewMain(req, res) {
     }
     if (isRealMergeAction) emitEvent(EVENTS.BATCH_MERGE_UPDATED, { batchId });
     // 🔴 ส่งข้อมูล remind กลับไปพร้อมกัน
-    res.json({ message: 'Success', count: previewData.length, data: previewData, remind: remindData, duplicateKeys });
+    res.json({ message: 'Success', count: previewData.length, data: previewData, remind: remindData, newParts, duplicateKeys });
   } catch (error) { res.status(500).json({ error: 'Failed' }); }
 }
 

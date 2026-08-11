@@ -3,7 +3,7 @@ const multer = require('multer');
 const xlsx = require('xlsx');
 const { connectDB } = require('../database');
 const { validateRequiredColumns, findDuplicateHeaders, REQUIRED_FIELDS_TARGET_RO } = require('../lib/validateColumns');
-const { createBatchIfNotExists, getPreviousBatchId } = require('../lib/batches');
+const { createBatchIfNotExists, getPreviousTgRows } = require('../lib/batches');
 const { findNewPartsSinceBatch } = require('../lib/partMatching');
 const { emitEvent, EVENTS } = require('../lib/socketHub');
 
@@ -11,21 +11,15 @@ const router = express.Router();
 const upload = multer({ storage: multer.memoryStorage() });
 
 // Recomputes new-parts-since-previous-batch for batchId, rather than relying
-// on anything retained from the original upload — used by both the upload
-// response and the standalone download endpoint so the two can never
-// disagree, and so the download works even after the user navigates away
-// and comes back.
+// on anything retained anywhere else — used by the download endpoint so it
+// works even after the user navigates away and comes back. New-parts
+// detection surfaces to the user at Merge time (preview-main), not here;
+// this endpoint only needs to recompute the same result for the file
+// download.
 async function computeNewParts(db, batchId) {
-  const previousBatchId = await getPreviousBatchId(db, batchId);
   const currentRaw = await db.all('SELECT data FROM target_ro WHERE batch_id = ?', batchId);
   const currentTgRows = currentRaw.map((r) => JSON.parse(r.data));
-
-  let previousTgRows = [];
-  if (previousBatchId) {
-    const previousRaw = await db.all('SELECT data FROM target_ro WHERE batch_id = ?', previousBatchId);
-    previousTgRows = previousRaw.map((r) => JSON.parse(r.data));
-  }
-
+  const previousTgRows = await getPreviousTgRows(db, batchId);
   return { newParts: findNewPartsSinceBatch(currentTgRows, previousTgRows), currentTgRows };
 }
 
@@ -61,13 +55,10 @@ async function handleTargetRoUpload(req, res) {
       await db.exec('COMMIT');
       emitEvent(EVENTS.BATCH_UPLOAD_UPDATED, { batchId });
 
-      const { newParts } = await computeNewParts(db, batchId);
-
       res.json({
         message: 'Target R/O RAW saved to DB successfully',
         batchId,
         warnings: duplicates.length > 0 ? { duplicateHeaders: duplicates } : undefined,
-        newParts,
       });
 
     } catch (insertError) {

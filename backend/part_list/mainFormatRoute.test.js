@@ -7,6 +7,7 @@ const { initDB, connectDB } = require('../database');
 const { initSocketHub, EVENTS } = require('../lib/socketHub');
 const { handlePreviewMain, handleDownloadMain } = require('./mainFormatRoute');
 const { handleProcessAssignAddr } = require('../handheld_part_list/assignAddrRoute');
+const { setBaselineBatch } = require('../lib/batches');
 
 function bufferFromAoa(aoa) {
   const wb = xlsx.utils.book_new();
@@ -170,6 +171,32 @@ async function cleanupBatch(batchId) {
   await db.run('DELETE FROM target_ro WHERE batch_id = ?', batchId);
   await db.run('DELETE FROM part_procurement WHERE batch_id = ?', batchId);
   await db.run('DELETE FROM upload_batches WHERE batch_id = ?', batchId);
+}
+
+// getPreviousBatchId's chronological fallback is a genuinely global, unscoped
+// "most recent batch before this one" query — a real "now" timestamp for
+// every batch leaves a window where some other, concurrently-running test
+// file's own real-time batch could land in between and get picked instead.
+// Pre-inserting the upload_batches row ourselves with a fully controlled
+// date in a year no other test uses (2099) makes ordering deterministic and
+// immune to any real-time interloper. handlePreviewMain doesn't create the
+// batch row itself (unlike handleTargetRoUpload), so this is required, not
+// just a safety net — and setStoredGroupPrefix's UPSERT only touches
+// group_prefix on conflict, leaving this pre-set upload_date untouched.
+async function preCreateBatchAt(batchId, isoDate) {
+  const db = await connectDB();
+  await db.run('INSERT INTO upload_batches (batch_id, upload_date) VALUES (?, ?)', [batchId, isoDate]);
+}
+
+async function seedTgRows(batchId, rows) {
+  const db = await connectDB();
+  const now = new Date().toISOString();
+  for (const row of rows) {
+    await db.run(
+      'INSERT INTO target_ro (batch_id, key_tg, data, upload_at) VALUES (?, ?, ?, ?)',
+      [batchId, 'RAW', JSON.stringify(row), now]
+    );
+  }
 }
 
 async function cleanupPrefixHistory(prefix) {
@@ -588,5 +615,105 @@ test('handleProcessAssignAddr: the new keyTG dedup composes correctly with the e
     assert.deepStrictEqual(partNumbers, ['AAAAAAAAAAAA', 'BBBBBBBBBBBB', 'CCCCCCCCCCCC']);
   } finally {
     await cleanupBatch(batchId);
+  }
+});
+
+// New-parts detection surfaces at Merge time (handlePreviewMain), not at
+// Target R/O upload time — these three tests moved here from
+// targetRoRoute.test.js when that trigger point moved.
+
+test('handlePreviewMain: first-ever batch (no previous batch to compare against) flags every valid row as new', async () => {
+  const batchId = 'TEST-NEWPARTS-FIRST-' + Date.now();
+  await preCreateBatchAt(batchId, '2099-01-01T00:00:00.000Z');
+  await seedTgRows(batchId, [
+    { 'Part No 12 Digits': '111111111111', 'Supplier': 'ABC', 'Dock IH routing': 'SW', 'Source': '1' },
+    { 'Part No 12 Digits': '222222222222', 'Supplier': 'ABC', 'Dock IH routing': 'ST', 'Source': '1' },
+    { 'Part No 12 Digits': '', 'Supplier': 'ABC', 'Dock IH routing': 'SW', 'Source': '1' }, // blank part no — invalid, must not be flagged
+  ]);
+
+  try {
+    const res = mockRes();
+    await handlePreviewMain({ query: { batchId, prefix: 'NEWPFX1' } }, res);
+    assert.strictEqual(res.statusCode, 200);
+    assert.strictEqual(res.body.newParts.length, 2);
+    assert.deepStrictEqual(
+      res.body.newParts.map((r) => r['Part No 12 Digits']).sort(),
+      ['111111111111', '222222222222']
+    );
+  } finally {
+    await cleanupBatch(batchId);
+    await cleanupPrefixHistory('NEWPFX1');
+  }
+});
+
+test('handlePreviewMain: a second batch only flags rows whose keyTG is not in the immediately-previous batch', async () => {
+  const previousBatchId = 'TEST-NEWPARTS-PREV-' + Date.now();
+  const currentBatchId = 'TEST-NEWPARTS-CUR-' + Date.now();
+
+  try {
+    await preCreateBatchAt(previousBatchId, '2099-01-01T00:00:00.000Z');
+    await seedTgRows(previousBatchId, [
+      { 'Part No 12 Digits': '111111111111', 'Supplier': 'ABC', 'Dock IH routing': 'SW', 'Source': '1' },
+    ]);
+
+    await preCreateBatchAt(currentBatchId, '2099-02-01T00:00:00.000Z');
+    // Same part (111...) plus a genuinely new one (222...).
+    await seedTgRows(currentBatchId, [
+      { 'Part No 12 Digits': '111111111111', 'Supplier': 'ABC', 'Dock IH routing': 'SW', 'Source': '1' },
+      { 'Part No 12 Digits': '222222222222', 'Supplier': 'ABC', 'Dock IH routing': 'SW', 'Source': '1' },
+    ]);
+
+    const res = mockRes();
+    await handlePreviewMain({ query: { batchId: currentBatchId, prefix: 'NEWPFX2' } }, res);
+
+    assert.strictEqual(res.body.newParts.length, 1);
+    assert.strictEqual(res.body.newParts[0]['Part No 12 Digits'], '222222222222');
+  } finally {
+    await cleanupBatch(previousBatchId);
+    await cleanupBatch(currentBatchId);
+    await cleanupPrefixHistory('NEWPFX2');
+  }
+});
+
+test('handlePreviewMain: an explicitly-set baseline is preferred over the chronologically-previous batch', async () => {
+  const oldestBatchId = 'TEST-NEWPARTS-BASE-' + Date.now();
+  const middleBatchId = 'TEST-NEWPARTS-MID-' + Date.now();
+  const currentBatchId = 'TEST-NEWPARTS-CUR2-' + Date.now();
+
+  try {
+    // Oldest batch contains part 111 (the real reference point per the baseline).
+    await preCreateBatchAt(oldestBatchId, '2099-01-01T00:00:00.000Z');
+    await seedTgRows(oldestBatchId, [
+      { 'Part No 12 Digits': '111111111111', 'Supplier': 'ABC', 'Dock IH routing': 'SW', 'Source': '1' },
+    ]);
+
+    // Middle (chronologically-previous) batch contains only an unrelated part.
+    await preCreateBatchAt(middleBatchId, '2099-02-01T00:00:00.000Z');
+    await seedTgRows(middleBatchId, [
+      { 'Part No 12 Digits': '999999999999', 'Supplier': 'ABC', 'Dock IH routing': 'SW', 'Source': '1' },
+    ]);
+
+    const db = await connectDB();
+    await setBaselineBatch(db, oldestBatchId);
+
+    await preCreateBatchAt(currentBatchId, '2099-03-01T00:00:00.000Z');
+    // Current batch re-includes 111 (present in the baseline) plus a genuinely new 222.
+    await seedTgRows(currentBatchId, [
+      { 'Part No 12 Digits': '111111111111', 'Supplier': 'ABC', 'Dock IH routing': 'SW', 'Source': '1' },
+      { 'Part No 12 Digits': '222222222222', 'Supplier': 'ABC', 'Dock IH routing': 'SW', 'Source': '1' },
+    ]);
+
+    const res = mockRes();
+    await handlePreviewMain({ query: { batchId: currentBatchId, prefix: 'NEWPFX3' } }, res);
+
+    // Without the baseline, 111 would also show as new (it isn't in "middle").
+    // With the baseline preferred, only 222 is genuinely new.
+    assert.strictEqual(res.body.newParts.length, 1);
+    assert.strictEqual(res.body.newParts[0]['Part No 12 Digits'], '222222222222');
+  } finally {
+    await cleanupBatch(oldestBatchId);
+    await cleanupBatch(middleBatchId);
+    await cleanupBatch(currentBatchId);
+    await cleanupPrefixHistory('NEWPFX3');
   }
 });

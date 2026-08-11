@@ -71,6 +71,17 @@ async function getPreviousBatchId(db, currentBatchId) {
   return previous ? previous.batch_id : null;
 }
 
+// Resolves and parses the previous batch's Target R/O rows for new-parts
+// comparison — shared by every caller that needs "previous batch's data" so
+// they can never disagree on what that means. Returns [] when there is no
+// previous batch (see getPreviousBatchId).
+async function getPreviousTgRows(db, batchId) {
+  const previousBatchId = await getPreviousBatchId(db, batchId);
+  if (!previousBatchId) return [];
+  const previousRaw = await db.all('SELECT data FROM target_ro WHERE batch_id = ?', previousBatchId);
+  return previousRaw.map((r) => JSON.parse(r.data));
+}
+
 module.exports = {
   generateBatchId,
   createBatchIfNotExists,
@@ -79,4 +90,5 @@ module.exports = {
   setBaselineBatch,
   getBaselineBatchId,
   getPreviousBatchId,
+  getPreviousTgRows,
 };
