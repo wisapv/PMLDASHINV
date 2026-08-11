@@ -408,6 +408,7 @@ const ListCreate = ({ activeTab, setUploadTab }) => {
   };
 
   const tableHeaders = previewData.length > 0 ? Object.keys(previewData[0]) : [];
+  const newPartsTableHeaders = newPartsData.length > 0 ? Object.keys(newPartsData[0]) : [];
   const uniqueGroupsForDropdown = [...new Set(previewData.map(item => item['Group ID*']))].filter(Boolean);
   const filteredPreviewData = selectedPreviewGroup === 'All' ? previewData : previewData.filter(item => item['Group ID*'] === selectedPreviewGroup);
 
@@ -556,23 +557,17 @@ const ListCreate = ({ activeTab, setUploadTab }) => {
                       </div>
 
                       <div className="p-6 flex flex-col gap-4">
-                        <div className="max-h-[300px] overflow-y-auto border border-ink/5 rounded-xl bg-white shadow-sm">
-                          <table className="w-full text-left text-[11px] whitespace-nowrap">
-                            <thead className="bg-[#FAFAF7] sticky top-0">
-                              <tr className="text-muted uppercase tracking-wider">
-                                <th className="px-4 py-3 border-b border-ink/5">Part No</th>
-                                <th className="px-4 py-3 border-b border-ink/5">Part Name</th>
-                                <th className="px-4 py-3 border-b border-ink/5">Supplier</th>
-                                <th className="px-4 py-3 border-b border-ink/5">Dock IH</th>
+                        <div className="overflow-x-auto max-w-full max-h-[300px] border border-ink/5 rounded-xl bg-white shadow-sm">
+                          <table className="w-full text-left text-xs whitespace-nowrap border-collapse">
+                            <thead className="bg-white border-b border-ink/5 sticky top-0 z-10 shadow-sm">
+                              <tr className="text-muted uppercase tracking-tighter bg-[#FAFAF7]/90 backdrop-blur-sm">
+                                {newPartsTableHeaders.map((header, idx) => (<th key={idx} className="px-4 py-3 font-bold border-r border-ink/5 last:border-0">{header}</th>))}
                               </tr>
                             </thead>
                             <tbody className="divide-y divide-ink/5">
-                              {newPartsData.map((r, i) => (
-                                <tr key={i} className="hover:bg-[#FAFAF7]/50 transition-colors">
-                                  <td className="px-4 py-3 font-mono text-ink">{r['Part No 12 Digits']}</td>
-                                  <td className="px-4 py-3 text-ink">{r['Part Name'] || r['Part Description'] || ''}</td>
-                                  <td className="px-4 py-3 text-ink">{r['Supplier']}</td>
-                                  <td className="px-4 py-3 font-medium text-ink">{r['Dock IH routing']}</td>
+                              {newPartsData.map((row, idx) => (
+                                <tr key={idx} className="hover:bg-[#FAFAF7]/50 transition-colors">
+                                  {newPartsTableHeaders.map((header, hIdx) => (<td key={hIdx} className="px-4 py-3 font-medium text-ink border-r border-ink/5 last:border-0">{String(row[header] || '')}</td>))}
                                 </tr>
                               ))}
                             </tbody>

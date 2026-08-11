@@ -5,7 +5,7 @@ const path = require('path');
 const xlsx = require('xlsx');
 const { initDB, connectDB } = require('../database');
 const { initSocketHub, EVENTS } = require('../lib/socketHub');
-const { handlePreviewMain, handleDownloadMain } = require('./mainFormatRoute');
+const { handlePreviewMain, handleDownloadMain, handleDownloadNewParts } = require('./mainFormatRoute');
 const { handleProcessAssignAddr } = require('../handheld_part_list/assignAddrRoute');
 const { setBaselineBatch } = require('../lib/batches');
 
@@ -197,6 +197,41 @@ async function seedTgRows(batchId, rows) {
       [batchId, 'RAW', JSON.stringify(row), now]
     );
   }
+}
+
+async function seedPpRows(batchId, rows) {
+  const db = await connectDB();
+  const now = new Date().toISOString();
+  for (const row of rows) {
+    await db.run(
+      'INSERT INTO part_procurement (batch_id, key_pp, data, upload_at) VALUES (?, ?, ?, ?)',
+      [batchId, 'RAW', JSON.stringify(row), now]
+    );
+  }
+}
+
+// Minimal Part Procurement row matching a given Dock IH routing + Part No —
+// enough for buildMainFormatRows to match and produce a full 27-column row.
+function ppRowFor(dock, partNo, partDesc = 'TEST PART') {
+  return {
+    'T/C TO (UNL)': '20991231',
+    'DOCK': dock,
+    'Production Routing': '',
+    'PART #': partNo,
+    'PART DESC': partDesc,
+    'COMP': 'C1',
+    'SUPL': 'ABC',
+    'PLANT': 'P1',
+    'S.DOCK': 'SD1',
+    'KBN': 'K1',
+    'Model Name': 'MODL',
+    'Life Cycle Code': 'L1',
+    'V.SHARE FLG[SYS L/O DATE BASIS]': 'V1',
+    'V.SHARE VALUE': 'VV1',
+    'ORD Method': 'OM1',
+    'QTY /CONT': '10',
+    'PACK QTY/CONT': '20',
+  };
 }
 
 async function cleanupPrefixHistory(prefix) {
@@ -622,13 +657,29 @@ test('handleProcessAssignAddr: the new keyTG dedup composes correctly with the e
 // Target R/O upload time — these three tests moved here from
 // targetRoRoute.test.js when that trigger point moved.
 
-test('handlePreviewMain: first-ever batch (no previous batch to compare against) flags every valid row as new', async () => {
+// The 27 keys the Main Format 26/27-column construction always produces, in
+// order — used to assert newParts rows have the exact same shape as
+// previewData rows, not a separately maintained thinner format.
+const MAIN_FORMAT_COLUMNS = [
+  'Company*', 'Company plant code*', 'Group ID*', 'CTL flag*', 'Part No.*', 'Suffix*',
+  'Receiving company*', 'Receiving company plant code*', 'Production process routing',
+  'Dock code*', 'Supplier*', 'Supplier plant code*', 'Supplier shipping dock',
+  'Previous process routing', 'Dummy', 'Kanban No.*', 'Source code*', 'Hikiate matching key*',
+  'Model 1', 'Life cycle code*', 'Vender share type', 'Vender share value', 'Order method*',
+  'Order lot*', 'Order lot size*', 'Round up flag*', 'Part name*',
+];
+
+test('handlePreviewMain: first-ever batch (no previous batch to compare against) flags every valid, matched row as new, in full Main Format column shape', async () => {
   const batchId = 'TEST-NEWPARTS-FIRST-' + Date.now();
   await preCreateBatchAt(batchId, '2099-01-01T00:00:00.000Z');
   await seedTgRows(batchId, [
     { 'Part No 12 Digits': '111111111111', 'Supplier': 'ABC', 'Dock IH routing': 'SW', 'Source': '1' },
     { 'Part No 12 Digits': '222222222222', 'Supplier': 'ABC', 'Dock IH routing': 'ST', 'Source': '1' },
     { 'Part No 12 Digits': '', 'Supplier': 'ABC', 'Dock IH routing': 'SW', 'Source': '1' }, // blank part no — invalid, must not be flagged
+  ]);
+  await seedPpRows(batchId, [
+    ppRowFor('SW', '111111111111', 'PART ONE'),
+    ppRowFor('ST', '222222222222', 'PART TWO'),
   ]);
 
   try {
@@ -637,9 +688,19 @@ test('handlePreviewMain: first-ever batch (no previous batch to compare against)
     assert.strictEqual(res.statusCode, 200);
     assert.strictEqual(res.body.newParts.length, 2);
     assert.deepStrictEqual(
-      res.body.newParts.map((r) => r['Part No 12 Digits']).sort(),
-      ['111111111111', '222222222222']
+      res.body.newParts.map((r) => r['Part No.*']).sort(),
+      ['1111111111', '2222222222']
     );
+    // Full Main Format shape, not the old raw Target R/O fields.
+    for (const row of res.body.newParts) {
+      assert.deepStrictEqual(Object.keys(row), MAIN_FORMAT_COLUMNS);
+    }
+    // Genuinely the same rows as previewData for the same parts — not a
+    // separately constructed subset.
+    const previewByPartNo = Object.fromEntries(res.body.data.map((r) => [r['Part No.*'], r]));
+    for (const row of res.body.newParts) {
+      assert.deepStrictEqual(row, previewByPartNo[row['Part No.*']]);
+    }
   } finally {
     await cleanupBatch(batchId);
     await cleanupPrefixHistory('NEWPFX1');
@@ -662,12 +723,17 @@ test('handlePreviewMain: a second batch only flags rows whose keyTG is not in th
       { 'Part No 12 Digits': '111111111111', 'Supplier': 'ABC', 'Dock IH routing': 'SW', 'Source': '1' },
       { 'Part No 12 Digits': '222222222222', 'Supplier': 'ABC', 'Dock IH routing': 'SW', 'Source': '1' },
     ]);
+    await seedPpRows(currentBatchId, [
+      ppRowFor('SW', '111111111111'),
+      ppRowFor('SW', '222222222222'),
+    ]);
 
     const res = mockRes();
     await handlePreviewMain({ query: { batchId: currentBatchId, prefix: 'NEWPFX2' } }, res);
 
     assert.strictEqual(res.body.newParts.length, 1);
-    assert.strictEqual(res.body.newParts[0]['Part No 12 Digits'], '222222222222');
+    assert.strictEqual(res.body.newParts[0]['Part No.*'], '2222222222');
+    assert.deepStrictEqual(Object.keys(res.body.newParts[0]), MAIN_FORMAT_COLUMNS);
   } finally {
     await cleanupBatch(previousBatchId);
     await cleanupBatch(currentBatchId);
@@ -702,6 +768,10 @@ test('handlePreviewMain: an explicitly-set baseline is preferred over the chrono
       { 'Part No 12 Digits': '111111111111', 'Supplier': 'ABC', 'Dock IH routing': 'SW', 'Source': '1' },
       { 'Part No 12 Digits': '222222222222', 'Supplier': 'ABC', 'Dock IH routing': 'SW', 'Source': '1' },
     ]);
+    await seedPpRows(currentBatchId, [
+      ppRowFor('SW', '111111111111'),
+      ppRowFor('SW', '222222222222'),
+    ]);
 
     const res = mockRes();
     await handlePreviewMain({ query: { batchId: currentBatchId, prefix: 'NEWPFX3' } }, res);
@@ -709,11 +779,130 @@ test('handlePreviewMain: an explicitly-set baseline is preferred over the chrono
     // Without the baseline, 111 would also show as new (it isn't in "middle").
     // With the baseline preferred, only 222 is genuinely new.
     assert.strictEqual(res.body.newParts.length, 1);
-    assert.strictEqual(res.body.newParts[0]['Part No 12 Digits'], '222222222222');
+    assert.strictEqual(res.body.newParts[0]['Part No.*'], '2222222222');
   } finally {
     await cleanupBatch(oldestBatchId);
     await cleanupBatch(middleBatchId);
     await cleanupBatch(currentBatchId);
     await cleanupPrefixHistory('NEWPFX3');
   }
+});
+
+test('handlePreviewMain: a new Target R/O row with no Part Procurement match is excluded from newParts, but still appears in remind', async () => {
+  const previousBatchId = 'TEST-NEWPARTS-NOPPMATCH-PREV-' + Date.now();
+  const currentBatchId = 'TEST-NEWPARTS-NOPPMATCH-CUR-' + Date.now();
+
+  try {
+    await preCreateBatchAt(previousBatchId, '2099-01-01T00:00:00.000Z');
+    await seedTgRows(previousBatchId, []);
+
+    await preCreateBatchAt(currentBatchId, '2099-02-01T00:00:00.000Z');
+    // New part, but no matching Part Procurement row is seeded for it —
+    // it can never produce a full 27-column row.
+    await seedTgRows(currentBatchId, [
+      { 'Part No 12 Digits': '333333333333', 'Supplier': 'ABC', 'Dock IH routing': 'SW', 'Source': '1' },
+    ]);
+    // No seedPpRows call — Part Procurement is empty for this batch.
+
+    const res = mockRes();
+    await handlePreviewMain({ query: { batchId: currentBatchId, prefix: 'NEWPFX4' } }, res);
+
+    assert.strictEqual(res.body.newParts.length, 0);
+    assert.strictEqual(res.body.remind.length, 1);
+    assert.strictEqual(res.body.remind[0]['Part No'], '333333333333');
+    assert.strictEqual(res.body.remind[0]['Reason'], 'Missing in Part Procurement');
+  } finally {
+    await cleanupBatch(previousBatchId);
+    await cleanupBatch(currentBatchId);
+    await cleanupPrefixHistory('NEWPFX4');
+  }
+});
+
+test('handleDownloadNewParts: produces a .xlsx with the same 27-column Main Format layout as handleDownloadMain, filtered to new parts', async () => {
+  const previousBatchId = 'TEST-DLNEWPARTS-PREV-' + Date.now();
+  const currentBatchId = 'TEST-DLNEWPARTS-CUR-' + Date.now();
+
+  try {
+    await preCreateBatchAt(previousBatchId, '2099-01-01T00:00:00.000Z');
+    await seedTgRows(previousBatchId, [
+      { 'Part No 12 Digits': '111111111111', 'Supplier': 'ABC', 'Dock IH routing': 'SW', 'Source': '1' },
+    ]);
+
+    await preCreateBatchAt(currentBatchId, '2099-02-01T00:00:00.000Z');
+    await seedTgRows(currentBatchId, [
+      { 'Part No 12 Digits': '111111111111', 'Supplier': 'ABC', 'Dock IH routing': 'SW', 'Source': '1' },
+      { 'Part No 12 Digits': '222222222222', 'Supplier': 'XYZ', 'Dock IH routing': 'ST', 'Source': '2' },
+    ]);
+    await seedPpRows(currentBatchId, [
+      ppRowFor('SW', '111111111111'),
+      ppRowFor('ST', '222222222222', 'NEW PART TWO'),
+    ]);
+
+    // Merge first, so download-main's own row-count-matches-preview
+    // expectations elsewhere in this file stay meaningful; not required by
+    // handleDownloadNewParts itself, which recomputes independently.
+    await handlePreviewMain({ query: { batchId: currentBatchId, prefix: 'DLNEWPFX' } }, mockRes());
+
+    const res = mockRes();
+    await handleDownloadNewParts({ query: { batchId: currentBatchId } }, res);
+
+    assert.strictEqual(res.statusCode, 200);
+    assert.ok(Buffer.isBuffer(res.body));
+
+    const wb = xlsx.read(res.body, { type: 'buffer' });
+    const ws = wb.Sheets[wb.SheetNames[0]];
+    const rows = xlsx.utils.sheet_to_json(ws, { header: 1 });
+    // Same template shape as handleDownloadMain: 5 header rows + data rows + END.
+    assert.strictEqual(rows.length, 5 + 1 + 1);
+    const dataRow = rows[5];
+    assert.strictEqual(dataRow[2], 'DLNEWPFXA2'); // Group ID* for shop A, source 2
+    assert.strictEqual(dataRow[4], '2222222222'); // Part No.*
+    assert.deepStrictEqual(rows[6], ['END']);
+  } finally {
+    await cleanupBatch(previousBatchId);
+    await cleanupBatch(currentBatchId);
+    await cleanupPrefixHistory('DLNEWPFX');
+  }
+});
+
+test('handleDownloadNewParts: zero new parts produces the template header rows plus END, no data rows — not an error', async () => {
+  const batchId = 'TEST-DLNEWPARTS-EMPTY-' + Date.now();
+  const secondBatchId = batchId + '-B';
+
+  try {
+    await preCreateBatchAt(batchId, '2099-01-01T00:00:00.000Z');
+    await seedTgRows(batchId, [
+      { 'Part No 12 Digits': '111111111111', 'Supplier': 'ABC', 'Dock IH routing': 'SW', 'Source': '1' },
+    ]);
+    await seedPpRows(batchId, [ppRowFor('SW', '111111111111')]);
+
+    await preCreateBatchAt(secondBatchId, '2099-02-01T00:00:00.000Z');
+    await seedTgRows(secondBatchId, [
+      { 'Part No 12 Digits': '111111111111', 'Supplier': 'ABC', 'Dock IH routing': 'SW', 'Source': '1' },
+    ]);
+    await seedPpRows(secondBatchId, [ppRowFor('SW', '111111111111')]);
+
+    const res = mockRes();
+    await handleDownloadNewParts({ query: { batchId: secondBatchId } }, res);
+
+    assert.strictEqual(res.statusCode, 200);
+    const wb = xlsx.read(res.body, { type: 'buffer' });
+    const ws = wb.Sheets[wb.SheetNames[0]];
+    const rows = xlsx.utils.sheet_to_json(ws, { header: 1 });
+    assert.strictEqual(rows.length, 5 + 1); // 5 header rows + END, zero data rows
+    assert.deepStrictEqual(rows[5], ['END']);
+  } finally {
+    await cleanupBatch(batchId);
+    await cleanupBatch(secondBatchId);
+  }
+});
+
+test('handleDownloadNewParts: missing batchId is a 400, unknown batchId is a 404', async () => {
+  const missingRes = mockRes();
+  await handleDownloadNewParts({ query: {} }, missingRes);
+  assert.strictEqual(missingRes.statusCode, 400);
+
+  const notFoundRes = mockRes();
+  await handleDownloadNewParts({ query: { batchId: 'TEST-DLNEWPARTS-NOPE-' + Date.now() } }, notFoundRes);
+  assert.strictEqual(notFoundRes.statusCode, 404);
 });
