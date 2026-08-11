@@ -7,4 +7,13 @@ function blankOrTrim(value) {
   return String(value ?? '').trim();
 }
 
-module.exports = { blankOrTrim };
+// SheetJS's aoa_to_sheet/json_to_sheet treat a `null` array/property value as
+// "no cell here" but an empty string `''` as a real (blank-looking) text
+// cell — and Excel counts that cell as non-blank in things like Pivot Table
+// aggregations. Apply this only right before handing a row to the xlsx
+// writer, never to blankOrTrim's own JSON/preview output, which needs `''`.
+function toExcelCellValue(value) {
+  return value === '' ? null : value;
+}
+
+module.exports = { blankOrTrim, toExcelCellValue };
