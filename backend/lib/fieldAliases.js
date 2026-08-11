@@ -5,6 +5,11 @@
 const FIELD_ALIASES = {
   // Part Procurement columns
   TC_TO_UNL: ['T/C TO (UNL)', 'T/C TO (UNL) ', 'T/C TO(UNL)'],
+
+  // Address Master columns — T/C FROM(UNL) has no space before the
+  // parenthesis in the real source file, confirmed by the business owner;
+  // the space variant is kept as a defensive fallback only.
+  TC_FROM_UNL: ['T/C FROM(UNL)', 'T/C FROM (UNL)', 'T/C FROM (UNL) '],
   DOCK: ['DOCK', 'DOCK '],
   PROD_ROUTING: ['Production Routing', 'Production Routing ', 'Production process routing'],
   PART_NO_PP: ['PART #', 'PART # '],

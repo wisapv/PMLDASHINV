@@ -126,7 +126,14 @@ test('generateExcelBuffer: a blank ("") field value writes a genuinely absent ce
 
 const ADDR_HEADERS = ['T/C FROM (UNL)', 'T/C TO (UNL)', 'DOCK', 'PART #', 'Kanban Print Address', 'Lineside Address', 'PART DESC'];
 
-test('handleProcessAssignAddr: two time-overlapping valid Address Master rows for the same part both produce output rows (real 692050K110C0 example)', async () => {
+// The real Address Master source file's actual header has no space before
+// the parenthesis ("T/C FROM(UNL)") — confirmed directly from the business
+// owner's file. This is deliberately distinct from ADDR_HEADERS above (which
+// uses the space variant) so at least one test proves the real-world file
+// shape works, not just the variant the earlier tests happened to use.
+const ADDR_HEADERS_REAL_NO_SPACE = ['T/C FROM(UNL)', 'T/C TO (UNL)', 'DOCK', 'PART #', 'Kanban Print Address', 'Lineside Address', 'PART DESC'];
+
+test('handleProcessAssignAddr: two time-overlapping valid Address Master rows for the same part both produce output rows (real 692050K110C0 example, real no-space "T/C FROM(UNL)" header)', async () => {
   const batchId = 'TEST-ADDR-MULTIROW-' + Date.now();
   const partNo = '692050K110C0';
   await seedBatch(batchId, { partNo, dock: 'ZZ' });
@@ -139,7 +146,7 @@ test('handleProcessAssignAddr: two time-overlapping valid Address Master rows fo
       ['20181029', '99991231', 'ZZ', partNo, 'DO1 - R11', 'DO1 - R11', 'TEST PART'],
       ['20251014', '99991231', 'ZZ', partNo, 'SBP - L03', 'BP1 - R07', 'TEST PART'],
     ];
-    const addrBuffer = bufferFromAoa([ADDR_HEADERS, ...addrRows]);
+    const addrBuffer = bufferFromAoa([ADDR_HEADERS_REAL_NO_SPACE, ...addrRows]);
 
     const res = mockRes();
     await handleProcessAssignAddr({ file: { buffer: addrBuffer }, body: { batchId } }, res);
