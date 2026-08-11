@@ -113,8 +113,8 @@ async function handleProcessAssignAddr(req, res) {
         const partNameAddrLookup = new Map();
 
         addrRaw.forEach(row => {
-            const fromDate = parseExcelDate(row['T/C FROM (UNL)']);
-            const toDate = parseExcelDate(row['T/C TO (UNL)']);
+            const fromDate = parseExcelDate(getField(row, 'TC_FROM_UNL'));
+            const toDate = parseExcelDate(getField(row, 'TC_TO_UNL'));
             const isActive = !isNaN(fromDate) && !isNaN(toDate) && fromDate <= today && today <= toDate;
             if (!isActive) return;
 
