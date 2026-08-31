@@ -228,6 +228,90 @@ test('handleProcessAssignAddr: Kanban Print Address different from Lineside Addr
   }
 });
 
+test('handleProcessAssignAddr: identical Kanban Print Address across two time-overlapping valid rows collapses to one row, distinct Lineside addresses stay (real SH/D-07/FN1 example)', async () => {
+  const batchId = 'TEST-ADDR-SAMEKANBAN-' + Date.now();
+  const partNo = '909801000000'; // stand-in for the real 9.09801E+11-style part number
+  await seedBatch(batchId, { partNo, dock: 'SH' });
+
+  try {
+    // Both rows share the exact same Kanban Print Address ('D    -  07') but
+    // have genuinely different Lineside Addresses — the Kanban row must only
+    // appear once, while both Lineside rows must still appear.
+    const addrRows = [
+      ['20251106', '99991231', 'SH', partNo, 'D    -  07', 'FN1  - R09', 'TEST PART'],
+      ['20260126', '99991231', 'SH', partNo, 'D    -  07', 'FN1  - R11', 'TEST PART'],
+    ];
+    const addrBuffer = bufferFromAoa([ADDR_HEADERS, ...addrRows]);
+
+    const res = mockRes();
+    await handleProcessAssignAddr({ file: { buffer: addrBuffer }, body: { batchId } }, res);
+
+    assert.strictEqual(res.statusCode, 200);
+    assert.strictEqual(res.body.data.length, 3, 'the duplicated Kanban address must collapse to one row, not appear twice');
+    assert.deepStrictEqual(
+      res.body.data.map((r) => r.Addr).sort(),
+      ['D    -  07', 'FN1  - R09', 'FN1  - R11'].sort()
+    );
+  } finally {
+    await cleanupBatch(batchId);
+  }
+});
+
+test('handleProcessAssignAddr: the fallback (part-name) lookup surfaces multiple valid rows sharing a part name, not just the last one parsed', async () => {
+  const batchId = 'TEST-ADDR-FALLBACK-MULTIROW-' + Date.now();
+  const partNo = '999888777666';
+  const partDesc = 'UNIQUE FALLBACK PART';
+  await seedBatch(batchId, { partNo, dock: 'ZZ', partDesc });
+
+  try {
+    // Neither Address Master row's DOCK+PART # matches the Target R/O part
+    // (ZZ + 999888777666) directly — both only match via PART DESC, so this
+    // exercises the partNameAddrLookup fallback path. Both are valid and
+    // have genuinely different addresses; both must surface, not just one.
+    const addrRows = [
+      ['20180101', '99991231', 'XX', '000000000001', 'WH01', '', partDesc],
+      ['20180101', '99991231', 'YY', '000000000002', 'WH02', '', partDesc],
+    ];
+    const addrBuffer = bufferFromAoa([ADDR_HEADERS, ...addrRows]);
+
+    const res = mockRes();
+    await handleProcessAssignAddr({ file: { buffer: addrBuffer }, body: { batchId } }, res);
+
+    assert.strictEqual(res.statusCode, 200);
+    assert.strictEqual(res.body.hold.length, 0);
+    assert.strictEqual(res.body.data.length, 2, 'both fallback-matched rows must surface, not just the last one parsed');
+    assert.deepStrictEqual(res.body.data.map((r) => r.Addr).sort(), ['WH01', 'WH02']);
+  } finally {
+    await cleanupBatch(batchId);
+  }
+});
+
+test('handleProcessAssignAddr: a part with no direct match and no part-name match still goes to Hold, unchanged', async () => {
+  const batchId = 'TEST-ADDR-NOMATCH-' + Date.now();
+  const partNo = '123123123123';
+  await seedBatch(batchId, { partNo, dock: 'ZZ', partDesc: 'NEVER MATCHED PART' });
+
+  try {
+    // Address Master has a row, but neither its DOCK+PART # nor its PART DESC
+    // matches this part in any way.
+    const addrRows = [
+      ['20180101', '99991231', 'XX', '000000000001', 'WH01', '', 'SOME OTHER PART'],
+    ];
+    const addrBuffer = bufferFromAoa([ADDR_HEADERS, ...addrRows]);
+
+    const res = mockRes();
+    await handleProcessAssignAddr({ file: { buffer: addrBuffer }, body: { batchId } }, res);
+
+    assert.strictEqual(res.statusCode, 200);
+    assert.strictEqual(res.body.data.length, 0);
+    assert.strictEqual(res.body.hold.length, 1);
+    assert.strictEqual(res.body.hold[0]['Part No'], partNo);
+    assert.strictEqual(res.body.hold[0]['Reason'], 'Missing in Address Master');
+  } finally {
+    await cleanupBatch(batchId);
+  }
+});
+
 test('handleProcessAssignAddr: a key with zero valid Address Master rows (all expired) still goes to Hold, unchanged from today', async () => {
   const batchId = 'TEST-ADDR-ALLEXPIRED-' + Date.now();
   const partNo = '444555666777';

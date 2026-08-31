@@ -125,9 +125,13 @@ async function handleProcessAssignAddr(req, res) {
             if (!addrMap.has(keyAddr)) addrMap.set(keyAddr, []);
             addrMap.get(keyAddr).push(row);
 
+            // Same key -> row[] treatment as addrMap above: multiple valid rows
+            // can legitimately share a part name, and overwriting would silently
+            // drop all but the last one parsed.
             const partNameKey = String(row['PART DESC'] || row['PART NAME'] || '').trim().toUpperCase();
             if (partNameKey) {
-                partNameAddrLookup.set(partNameKey, row);
+                if (!partNameAddrLookup.has(partNameKey)) partNameAddrLookup.set(partNameKey, []);
+                partNameAddrLookup.get(partNameKey).push(row);
             }
         });
 
@@ -187,8 +191,7 @@ async function handleProcessAssignAddr(req, res) {
 
             if (!addrInfoList || addrInfoList.length === 0) {
                 const partNameKey = String(p['PART DESC'] || p['PART DESC '] || '').trim().toUpperCase();
-                const fallback = partNameAddrLookup.get(partNameKey);
-                addrInfoList = fallback ? [fallback] : [];
+                addrInfoList = partNameAddrLookup.get(partNameKey) || [];
             }
 
             const ppDock = String(p['DOCK'] || p['DOCK '] || '').trim();
@@ -240,7 +243,10 @@ async function handleProcessAssignAddr(req, res) {
             // this same part (genuinely different physical delivery/kanban
             // points, not sequential revisions) — each is processed
             // independently, so one part can produce more than one Kanban(+
-            // Lineside) pair of output rows.
+            // Lineside) pair of output rows. Candidates accumulate locally
+            // first so they can go through a final per-part Addr dedup below,
+            // rather than pushing straight to finalData.
+            const partRows = [];
             for (const addrInfo of addrInfoList) {
                 const kanbanAddrRaw = String(addrInfo['Kanban Print Address'] || '').trim().toUpperCase();
                 const linesideAddrRaw = String(addrInfo['Lineside Address'] || '').trim().toUpperCase();
@@ -248,7 +254,7 @@ async function handleProcessAssignAddr(req, res) {
                 const kanbanEval = evaluatePicAndShop(kanbanAddrRaw, ppDock, ppSupplier);
 
                 if (kanbanAddrRaw) {
-                    finalData.push(createFinalRow(kanbanAddrRaw, kanbanEval.pic, kanbanEval.shop, false));
+                    partRows.push(createFinalRow(kanbanAddrRaw, kanbanEval.pic, kanbanEval.shop, false));
                 }
 
                 // Only duplicate into a Lineside row when the group calls for it
@@ -257,8 +263,23 @@ async function handleProcessAssignAddr(req, res) {
                 // physical point counted twice.
                 if (kanbanEval.shouldDup && linesideAddrRaw && linesideAddrRaw !== kanbanAddrRaw) {
                     const linesideEval = evaluatePicAndShop(linesideAddrRaw, ppDock, ppSupplier);
-                    finalData.push(createFinalRow(linesideAddrRaw, linesideEval.pic, linesideEval.shop, true));
+                    partRows.push(createFinalRow(linesideAddrRaw, linesideEval.pic, linesideEval.shop, true));
                 }
+            }
+
+            // Final safety net, scoped strictly to this part's own candidate
+            // rows (never across different parts — two unrelated parts
+            // coincidentally sharing an address is normal): two different
+            // valid Address Master entries can share the same Kanban Print
+            // Address while differing only in Lineside Address, which the
+            // per-entry check above doesn't catch since it only compares
+            // Kanban vs Lineside within the same entry. Keep first occurrence.
+            const seenAddr = new Set();
+            for (const row of partRows) {
+                const normalizedAddr = row.Addr.trim().toUpperCase();
+                if (seenAddr.has(normalizedAddr)) continue;
+                seenAddr.add(normalizedAddr);
+                finalData.push(row);
             }
         });
 
