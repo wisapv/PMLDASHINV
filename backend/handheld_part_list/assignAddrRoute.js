@@ -52,6 +52,82 @@ const evaluatePicAndShop = (addrStr, dock, supplier) => {
     return { pic: 'A', shop, shouldDup: false };
 };
 
+// Pure row builder — no closures over per-part loop state — so it can be
+// reused identically by Pass 1 (direct match), Pass 2 (name-based fallback),
+// and the genuinely-unresolved MANUAL row, without duplicating the shape.
+function createFinalRow({ address, picType, finalShop, isLineside = false, ppDock, groupPrefix, source, p }) {
+    // 🔴 จุดแก้ไข: เช็คว่าถ้า PIC เป็น A, R, K ให้ตัด 3 ตัวเลย
+    let shortAddrLength = 2; // ค่าเริ่มต้น 2 ตัว
+
+    if (['A', 'R', 'K'].includes(picType)) {
+        shortAddrLength = 3; // PIC A, R, K ใช้ 3 ตัว
+    } else if (isLineside) {
+        shortAddrLength = 3; // Lineside อื่นๆ ใช้ 3 ตัวตามเดิม
+    }
+
+    const shortAddr = address.substring(0, shortAddrLength);
+
+    return {
+        Shop: finalShop,
+        Group: groupPrefix + finalShop + source,
+        Dock: ppDock,
+        Supplier: blankOrTrim(p['SUPL'] || p['SUPL ']),
+        "S.plant": blankOrTrim(p['PLANT'] || p['PLANT ']),
+        "S.dock": blankOrTrim(p['S.DOCK'] || p['S.DOCK ']),
+        "Part no.": blankOrTrim(p['PART #'] || p['PART # ']),
+        "Part name": blankOrTrim(p['PART DESC'] || p['PART DESC ']),
+        kbn: blankOrTrim(p['KBN'] || p['KBN ']),
+        "Q'ty": blankOrTrim(p['QTY /CONT'] || p['QTY /CONT ']),
+        Addr: address,
+        ShortAddr: shortAddr, // 🔴 นำความยาวใหม่ที่คำนวณได้ไปใช้
+        PIC: picType
+    };
+}
+
+// Address Master can have multiple time-overlapping valid rows for the same
+// part (genuinely different physical delivery/kanban points, not sequential
+// revisions) — each is processed independently, so one part can produce more
+// than one Kanban(+Lineside) pair of output rows. Candidates accumulate
+// locally first so they can go through a final per-part Addr dedup: two
+// different valid Address Master entries can share the same Kanban Print
+// Address while differing only in Lineside Address, which the per-entry
+// check below (Kanban vs Lineside within the same entry) doesn't catch.
+// Scoped strictly to this one part's own candidate rows — never across
+// different parts, since two unrelated parts coincidentally sharing an
+// address is normal and must not be collapsed.
+function buildPartRows(addrInfoList, { ppDock, ppSupplier, groupPrefix, source, p }) {
+    const partRows = [];
+    for (const addrInfo of addrInfoList) {
+        const kanbanAddrRaw = String(addrInfo['Kanban Print Address'] || '').trim().toUpperCase();
+        const linesideAddrRaw = String(addrInfo['Lineside Address'] || '').trim().toUpperCase();
+
+        const kanbanEval = evaluatePicAndShop(kanbanAddrRaw, ppDock, ppSupplier);
+
+        if (kanbanAddrRaw) {
+            partRows.push(createFinalRow({ address: kanbanAddrRaw, picType: kanbanEval.pic, finalShop: kanbanEval.shop, isLineside: false, ppDock, groupPrefix, source, p }));
+        }
+
+        // Only duplicate into a Lineside row when the group calls for it AND
+        // the Lineside Address genuinely differs from the Kanban Print
+        // Address for this same entry — otherwise it's the same physical
+        // point counted twice.
+        if (kanbanEval.shouldDup && linesideAddrRaw && linesideAddrRaw !== kanbanAddrRaw) {
+            const linesideEval = evaluatePicAndShop(linesideAddrRaw, ppDock, ppSupplier);
+            partRows.push(createFinalRow({ address: linesideAddrRaw, picType: linesideEval.pic, finalShop: linesideEval.shop, isLineside: true, ppDock, groupPrefix, source, p }));
+        }
+    }
+
+    const seenAddr = new Set();
+    const deduped = [];
+    for (const row of partRows) {
+        const normalizedAddr = row.Addr.trim().toUpperCase();
+        if (seenAddr.has(normalizedAddr)) continue;
+        seenAddr.add(normalizedAddr);
+        deduped.push(row);
+    }
+    return deduped;
+}
+
 // json_to_sheet has the same '' vs null quirk as aoa_to_sheet (see
 // toExcelCellValue), so this is the write boundary for the Handheld export:
 // dataRows here is whatever the client posts back (built from this route's
@@ -181,106 +257,81 @@ async function handleProcessAssignAddr(req, res) {
             }
         });
 
+        // Address Master's real file has no part-name column of its own (its
+        // header is SUPL/PLANT/COMP/DOCK/PART #/KBN/T-C dates/addresses/... —
+        // no "PART DESC"/"PART NAME"), so partNameAddrLookup above is always
+        // empty in practice; kept as a legacy fallback rather than removed.
+        // The real name-based fallback source is Part Procurement's own
+        // PART DESC: a part with no direct Address Master match borrows the
+        // resolved address entries of another part that shares its PART DESC
+        // and DID match directly. Two passes make that possible without
+        // depending on baseDataList's iteration order: Pass 1 resolves every
+        // direct match first (and records what it resolved, keyed by PART
+        // DESC); Pass 2 then lets every non-matching part look up siblings
+        // resolved in Pass 1, regardless of which one happened to come first.
+        const resolvedByName = new Map();
+        const pendingFallback = [];
+
         baseDataList.forEach(item => {
             const { t, p } = item;
             const ppDockValue = String(p['DOCK'] || p['DOCK '] || '').replace(/\s/g, '');
             const ppPartNo = String(p['PART #'] || p['PART # '] || '').replace(/\s/g, '');
             const addrLookupKey = (ppDockValue + ppPartNo).replace(/-/g, '');
-            
+
             let addrInfoList = addrMap.get(addrLookupKey);
 
             if (!addrInfoList || addrInfoList.length === 0) {
-                const partNameKey = String(p['PART DESC'] || p['PART DESC '] || '').trim().toUpperCase();
-                addrInfoList = partNameAddrLookup.get(partNameKey) || [];
+                const legacyPartNameKey = String(p['PART DESC'] || p['PART DESC '] || '').trim().toUpperCase();
+                addrInfoList = partNameAddrLookup.get(legacyPartNameKey) || [];
             }
 
             const ppDock = String(p['DOCK'] || p['DOCK '] || '').trim();
+            const source = String(t['Source'] || t['Source '] || '').trim();
+            const ppSupplier = String(p['SUPL'] || p['SUPL '] || '').trim();
+            const partDescKey = String(p['PART DESC'] || p['PART DESC '] || '').trim().toUpperCase();
+            const ctx = { ppDock, ppSupplier, groupPrefix, source, p, partDescKey };
 
-            if (addrInfoList.length === 0) {
-                holdData.push({
-                    "Dock": ppDock,
-                    "Supplier": blankOrTrim(p['SUPL'] || p['SUPL ']),
-                    "Part No": blankOrTrim(p['PART #'] || p['PART # ']),
-                    "Part Name": blankOrTrim(p['PART DESC'] || p['PART DESC ']),
-                    "Reason": "Missing in Address Master"
-                });
+            if (addrInfoList.length > 0) {
+                finalData.push(...buildPartRows(addrInfoList, ctx));
+
+                if (partDescKey) {
+                    if (!resolvedByName.has(partDescKey)) resolvedByName.set(partDescKey, []);
+                    resolvedByName.get(partDescKey).push(...addrInfoList);
+                }
+            } else {
+                pendingFallback.push(ctx);
+            }
+        });
+
+        pendingFallback.forEach(ctx => {
+            const { ppDock, groupPrefix: gp, source, p, partDescKey } = ctx;
+            const entries = partDescKey ? (resolvedByName.get(partDescKey) || []) : [];
+
+            if (entries.length > 0) {
+                finalData.push(...buildPartRows(entries, ctx));
                 return;
             }
 
-            const source = String(t['Source'] || t['Source '] || '').trim();
-            const ppSupplier = String(p['SUPL'] || p['SUPL '] || '').trim();
+            // Genuinely unresolved by both passes: still surface as one real
+            // output row instead of being silently excluded from what the
+            // field team receives — "MANUAL" is a dedicated catch-all group
+            // (Shop follows the same PIC-equals-Shop convention already used
+            // by the other non-address-based groups: W, T, K, R, TTAT), and
+            // "NOT FOUND" flags the Addr for correction via the Handheld
+            // popup. The Hold panel keeps showing the same part too — this
+            // adds real output, it doesn't replace that visibility aid.
+            finalData.push(createFinalRow({
+                address: 'NOT FOUND', picType: 'MANUAL', finalShop: 'MANUAL', isLineside: false,
+                ppDock, groupPrefix: gp, source, p,
+            }));
 
-            const createFinalRow = (address, picType, finalShop, isLineside = false) => {
-                // 🔴 จุดแก้ไข: เช็คว่าถ้า PIC เป็น A, R, K ให้ตัด 3 ตัวเลย
-                let shortAddrLength = 2; // ค่าเริ่มต้น 2 ตัว
-                
-                if (['A', 'R', 'K'].includes(picType)) {
-                    shortAddrLength = 3; // PIC A, R, K ใช้ 3 ตัว
-                } else if (isLineside) {
-                    shortAddrLength = 3; // Lineside อื่นๆ ใช้ 3 ตัวตามเดิม
-                }
-
-                const shortAddr = address.substring(0, shortAddrLength);
-
-                return {
-                    Shop: finalShop,
-                    Group: groupPrefix + finalShop + source,
-                    Dock: ppDock,
-                    Supplier: blankOrTrim(p['SUPL'] || p['SUPL ']),
-                    "S.plant": blankOrTrim(p['PLANT'] || p['PLANT ']),
-                    "S.dock": blankOrTrim(p['S.DOCK'] || p['S.DOCK ']),
-                    "Part no.": blankOrTrim(p['PART #'] || p['PART # ']),
-                    "Part name": blankOrTrim(p['PART DESC'] || p['PART DESC ']),
-                    kbn: blankOrTrim(p['KBN'] || p['KBN ']),
-                    "Q'ty": blankOrTrim(p['QTY /CONT'] || p['QTY /CONT ']),
-                    Addr: address,
-                    ShortAddr: shortAddr, // 🔴 นำความยาวใหม่ที่คำนวณได้ไปใช้
-                    PIC: picType
-                };
-            };
-
-            // Address Master can have multiple time-overlapping valid rows for
-            // this same part (genuinely different physical delivery/kanban
-            // points, not sequential revisions) — each is processed
-            // independently, so one part can produce more than one Kanban(+
-            // Lineside) pair of output rows. Candidates accumulate locally
-            // first so they can go through a final per-part Addr dedup below,
-            // rather than pushing straight to finalData.
-            const partRows = [];
-            for (const addrInfo of addrInfoList) {
-                const kanbanAddrRaw = String(addrInfo['Kanban Print Address'] || '').trim().toUpperCase();
-                const linesideAddrRaw = String(addrInfo['Lineside Address'] || '').trim().toUpperCase();
-
-                const kanbanEval = evaluatePicAndShop(kanbanAddrRaw, ppDock, ppSupplier);
-
-                if (kanbanAddrRaw) {
-                    partRows.push(createFinalRow(kanbanAddrRaw, kanbanEval.pic, kanbanEval.shop, false));
-                }
-
-                // Only duplicate into a Lineside row when the group calls for it
-                // AND the Lineside Address genuinely differs from the Kanban
-                // Print Address for this same entry — otherwise it's the same
-                // physical point counted twice.
-                if (kanbanEval.shouldDup && linesideAddrRaw && linesideAddrRaw !== kanbanAddrRaw) {
-                    const linesideEval = evaluatePicAndShop(linesideAddrRaw, ppDock, ppSupplier);
-                    partRows.push(createFinalRow(linesideAddrRaw, linesideEval.pic, linesideEval.shop, true));
-                }
-            }
-
-            // Final safety net, scoped strictly to this part's own candidate
-            // rows (never across different parts — two unrelated parts
-            // coincidentally sharing an address is normal): two different
-            // valid Address Master entries can share the same Kanban Print
-            // Address while differing only in Lineside Address, which the
-            // per-entry check above doesn't catch since it only compares
-            // Kanban vs Lineside within the same entry. Keep first occurrence.
-            const seenAddr = new Set();
-            for (const row of partRows) {
-                const normalizedAddr = row.Addr.trim().toUpperCase();
-                if (seenAddr.has(normalizedAddr)) continue;
-                seenAddr.add(normalizedAddr);
-                finalData.push(row);
-            }
+            holdData.push({
+                "Dock": ppDock,
+                "Supplier": blankOrTrim(p['SUPL'] || p['SUPL ']),
+                "Part No": blankOrTrim(p['PART #'] || p['PART # ']),
+                "Part Name": blankOrTrim(p['PART DESC'] || p['PART DESC ']),
+                "Reason": "Missing in Address Master"
+            });
         });
 
         emitEvent(EVENTS.HANDHELD_UPDATED, { batchId });

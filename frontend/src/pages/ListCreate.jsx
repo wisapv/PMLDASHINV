@@ -116,6 +116,12 @@ const ListCreate = ({ activeTab, setUploadTab }) => {
         setNewPartsData(result.newParts || []);
         const uniqueGroups = [...new Set(result.data.map((item) => item['Group ID*']))].filter(Boolean);
         setDownloadFiles(uniqueGroups.map((grp, index) => ({ id: `grp_${index}`, label: `Group: ${grp}`, value: grp, isChecked: true })));
+        // The whole point of silently restoring already-merged data (a page
+        // reload, or switching tabs and back) is to land the user straight
+        // on the preview they already had — without this, step stays at its
+        // previous value ('idle' on a fresh mount) and they'd have to click
+        // Merge again just to see data that's already sitting on the server.
+        setStep('preview');
       }
     } catch (err) { console.error("Failed to refresh preview data", err); }
   }, []);
@@ -149,13 +155,13 @@ const ListCreate = ({ activeTab, setUploadTab }) => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeTab, currentBatchId]);
 
-  // Cross-session live updates for the shared active batch. Deliberately
-  // conservative: only refreshes read-only/background data — the history
-  // list, upload-status flags derived from it, and the underlying preview
-  // data (silently; it doesn't force step to 'preview' or touch the
-  // download-selection UI beyond repopulating it from fresh data). Never
+  // Cross-session live updates for the shared active batch. Refreshes
+  // read-only/background data — the history list, upload-status flags
+  // derived from it, and the underlying preview data — and, via
+  // refreshPreviewDataSilently, jumps to the preview step once a merge
+  // result actually exists, same as a fresh load/tab-switch does. Never
   // touches open modals, typed-but-unsubmitted prefix input, or which
-  // sub-tab/step is currently showing.
+  // sub-tab is currently showing.
   useEffect(() => {
     const unsubUpload = subscribeToEvent(SOCKET_EVENTS.BATCH_UPLOAD_UPDATED, (payload) => {
       if (payload.batchId !== currentBatchId) return;
@@ -441,19 +447,22 @@ const ListCreate = ({ activeTab, setUploadTab }) => {
 
           {subTab === 'new' && (activeBatchId || isViewingHistoricalBatch) && (
             <div className="flex flex-col gap-6 animate-in fade-in">
+              {/* Visible regardless of step (idle/generating/preview) — previously
+                  scoped only to the idle/generating block, which meant it silently
+                  disappeared once a merge landed the user in the preview step. */}
+              <div className="w-full bg-white px-6 py-3 rounded-2xl border border-ink/5 shadow-[0_2px_10px_rgba(20,20,15,0.04)] flex justify-between items-center">
+                <div className="flex items-center gap-3">
+                  <span className="text-sm font-bold text-muted">Current Batch ID:</span>
+                  <span className="text-sm font-mono bg-ink/5 px-3 py-1 rounded-md text-ink">{currentBatchId}</span>
+                  <span className={`w-2 h-2 rounded-full ${isSocketConnected ? 'bg-success' : 'bg-red-400'}`} title={isSocketConnected ? 'Live updates connected' : 'Live updates disconnected'}></span>
+                </div>
+                <button onClick={handleStartNewBatchClick} className="text-xs bg-ink/5 hover:bg-ink/10 px-4 py-2 rounded-xl font-bold text-ink transition-colors whitespace-nowrap flex items-center gap-1.5">
+                  <RefreshCw size={14} /> Start New Batch
+                </button>
+              </div>
+
               {(step === 'idle' || step === 'generating') && (
                 <div className="flex flex-col items-center gap-8">
-                  <div className="w-full bg-white px-6 py-3 rounded-2xl border border-ink/5 shadow-[0_2px_10px_rgba(20,20,15,0.04)] flex justify-between items-center">
-                    <div className="flex items-center gap-3">
-                      <span className="text-sm font-bold text-muted">Current Batch ID:</span>
-                      <span className="text-sm font-mono bg-ink/5 px-3 py-1 rounded-md text-ink">{currentBatchId}</span>
-                      <span className={`w-2 h-2 rounded-full ${isSocketConnected ? 'bg-success' : 'bg-red-400'}`} title={isSocketConnected ? 'Live updates connected' : 'Live updates disconnected'}></span>
-                    </div>
-                    <button onClick={handleStartNewBatchClick} className="text-xs bg-ink/5 hover:bg-ink/10 px-4 py-2 rounded-xl font-bold text-ink transition-colors whitespace-nowrap flex items-center gap-1.5">
-                      <RefreshCw size={14} /> Start New Batch
-                    </button>
-                  </div>
-
                   <div className="w-full bg-white px-6 py-4 rounded-2xl border border-ink/5 shadow-[0_2px_10px_rgba(20,20,15,0.04)] flex flex-col gap-2">
                     <label className="text-sm font-bold text-muted">Group Prefix</label>
                     <div className="flex items-center gap-2">
@@ -582,10 +591,11 @@ const ListCreate = ({ activeTab, setUploadTab }) => {
                   )}
 
                   <div className="bg-white rounded-4xl shadow-[0_2px_12px_rgba(20,20,15,0.04)] border border-ink/5 overflow-hidden animate-in fade-in slide-in-from-bottom-4">
-                    <div className="px-6 py-4 border-b border-ink/5 flex flex-col lg:flex-row justify-between items-start lg:items-center gap-4 bg-[#FAFAF7]">
+                    <div className="px-6 py-4 border-b border-ink/5 flex flex-col lg:flex-row justify-between items-start lg:items-center gap-4 bg-gray-700">
                       <div className="flex flex-col">
-                        <h3 className="font-bold text-ink">Main Format Preview ({filteredPreviewData.length} items)</h3>
-                        <span className="text-xs text-muted">Batch ID: {currentBatchId}</span>
+                        {/* Same size/weight as "New Parts Since Last Batch" above (font-bold text-lg) — dark gray here instead of that header's lime, so the two read as one visual family but stay distinguishable. */}
+                        <h3 className="font-bold text-lg text-white">Main Format Preview ({filteredPreviewData.length} items)</h3>
+                        <span className="text-xs text-white/70">Batch ID: {currentBatchId}</span>
                       </div>
                       <div className="flex items-center gap-3 w-full lg:w-auto">
                         <div className="flex items-center bg-white border border-ink/10 rounded-xl px-3 py-1.5 shadow-[0_2px_10px_rgba(20,20,15,0.04)] flex-1 lg:flex-none">
@@ -595,7 +605,7 @@ const ListCreate = ({ activeTab, setUploadTab }) => {
                             {uniqueGroupsForDropdown.map(grp => (<option key={grp} value={grp}>{grp}</option>))}
                           </select>
                         </div>
-                        <button onClick={resetUpload} className="text-xs bg-ink/5 px-4 py-2 rounded-xl font-bold text-ink hover:bg-ink/10 transition-colors whitespace-nowrap">Reset</button>
+                        <button onClick={resetUpload} className="text-xs bg-white/10 px-4 py-2 rounded-xl font-bold text-white hover:bg-white/20 transition-colors whitespace-nowrap">Reset</button>
                       </div>
                     </div>
 

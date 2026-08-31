@@ -257,7 +257,7 @@ test('handleProcessAssignAddr: identical Kanban Print Address across two time-ov
   }
 });
 
-test('handleProcessAssignAddr: the fallback (part-name) lookup surfaces multiple valid rows sharing a part name, not just the last one parsed', async () => {
+test('handleProcessAssignAddr: legacy Address-Master-side name fallback (partNameAddrLookup) still surfaces multiple valid rows sharing a part name — kept though the real file has no such column', async () => {
   const batchId = 'TEST-ADDR-FALLBACK-MULTIROW-' + Date.now();
   const partNo = '999888777666';
   const partDesc = 'UNIQUE FALLBACK PART';
@@ -266,8 +266,11 @@ test('handleProcessAssignAddr: the fallback (part-name) lookup surfaces multiple
   try {
     // Neither Address Master row's DOCK+PART # matches the Target R/O part
     // (ZZ + 999888777666) directly — both only match via PART DESC, so this
-    // exercises the partNameAddrLookup fallback path. Both are valid and
-    // have genuinely different addresses; both must surface, not just one.
+    // exercises the legacy partNameAddrLookup fallback path (Address
+    // Master's own PART DESC column, which the real file doesn't have —
+    // see the sibling-fallback tests below for the real Part A behavior).
+    // Both rows are valid and have genuinely different addresses; both must
+    // surface, not just one.
     const addrRows = [
       ['20180101', '99991231', 'XX', '000000000001', 'WH01', '', partDesc],
       ['20180101', '99991231', 'YY', '000000000002', 'WH02', '', partDesc],
@@ -286,7 +289,78 @@ test('handleProcessAssignAddr: the fallback (part-name) lookup surfaces multiple
   }
 });
 
-test('handleProcessAssignAddr: a part with no direct match and no part-name match still goes to Hold, unchanged', async () => {
+test('handleProcessAssignAddr (Part A): a part with no direct Address Master match borrows the resolved address from a sibling part sharing the same Part Procurement PART DESC', async () => {
+  const batchId = 'TEST-ADDR-SIBLING-FALLBACK-' + Date.now();
+  const partDesc = 'BUMPER ASSY FR';
+
+  // X has a direct Address Master match; Y shares X's PART DESC (from Part
+  // Procurement, not Address Master — the real name source per Part A) but
+  // has a genuinely different Dock+PartNo with no Address Master row of its
+  // own at all.
+  await seedBatch(batchId, { partNo: '111111111111', dock: 'ZZ', supplier: 'SUPX', partDesc });
+  await seedBatch(batchId, { partNo: '222222222222', dock: 'YY', supplier: 'SUPY', partDesc });
+
+  try {
+    const addrRows = [
+      ['20180101', '99991231', 'ZZ', '111111111111', 'WH01', '', 'TEST PART'],
+    ];
+    const addrBuffer = bufferFromAoa([ADDR_HEADERS, ...addrRows]);
+
+    const res = mockRes();
+    await handleProcessAssignAddr({ file: { buffer: addrBuffer }, body: { batchId } }, res);
+
+    assert.strictEqual(res.statusCode, 200);
+    assert.strictEqual(res.body.hold.length, 0, 'Y must resolve via the sibling fallback, not fall through to Hold');
+    assert.strictEqual(res.body.data.length, 2);
+
+    const rowX = res.body.data.find((r) => r['Part no.'] === '111111111111');
+    const rowY = res.body.data.find((r) => r['Part no.'] === '222222222222');
+    assert.ok(rowX, 'X (direct match) must still produce its own row');
+    assert.ok(rowY, 'Y (borrowed via sibling fallback) must produce a row too');
+    assert.strictEqual(rowX.Addr, 'WH01');
+    // Y borrows the same physical address X resolved directly, but keeps
+    // its own identity (Dock, Supplier, Part no.) — it isn't a copy of X.
+    assert.strictEqual(rowY.Addr, 'WH01');
+    assert.strictEqual(rowY.Dock, 'YY');
+    assert.strictEqual(rowY.Supplier, 'SUPY');
+    assert.notStrictEqual(rowY.PIC, 'MANUAL');
+  } finally {
+    await cleanupBatch(batchId);
+  }
+});
+
+test('handleProcessAssignAddr (Part A): a part with a genuinely unique name and no direct match gets no false-positive sibling match', async () => {
+  const batchId = 'TEST-ADDR-SIBLING-NOFALSEPOS-' + Date.now();
+
+  // X resolves directly. Z shares no name with X and has no Address Master
+  // row of its own — it must NOT borrow X's address just because X resolved
+  // something in the same batch.
+  await seedBatch(batchId, { partNo: '111111111111', dock: 'ZZ', partDesc: 'BUMPER ASSY FR' });
+  await seedBatch(batchId, { partNo: '333333333333', dock: 'WW', partDesc: 'SUPPORT UREA TANK FILLER PIPE NO.1' });
+
+  try {
+    const addrRows = [
+      ['20180101', '99991231', 'ZZ', '111111111111', 'WH01', '', 'TEST PART'],
+    ];
+    const addrBuffer = bufferFromAoa([ADDR_HEADERS, ...addrRows]);
+
+    const res = mockRes();
+    await handleProcessAssignAddr({ file: { buffer: addrBuffer }, body: { batchId } }, res);
+
+    assert.strictEqual(res.statusCode, 200);
+    assert.strictEqual(res.body.hold.length, 1, 'Z has no sibling to borrow from, so it must genuinely go to Hold');
+    assert.strictEqual(res.body.hold[0]['Part No'], '333333333333');
+
+    const rowZ = res.body.data.find((r) => r['Part no.'] === '333333333333');
+    assert.ok(rowZ, 'Z still surfaces in data per Part B, but as MANUAL, not a false-positive WH01 match');
+    assert.strictEqual(rowZ.PIC, 'MANUAL');
+    assert.strictEqual(rowZ.Addr, 'NOT FOUND');
+  } finally {
+    await cleanupBatch(batchId);
+  }
+});
+
+test('handleProcessAssignAddr: a part with no direct match and no part-name match still goes to Hold, and now also surfaces as a MANUAL/NOT FOUND row in data (Part B)', async () => {
   const batchId = 'TEST-ADDR-NOMATCH-' + Date.now();
   const partNo = '123123123123';
   await seedBatch(batchId, { partNo, dock: 'ZZ', partDesc: 'NEVER MATCHED PART' });
@@ -303,16 +377,24 @@ test('handleProcessAssignAddr: a part with no direct match and no part-name matc
     await handleProcessAssignAddr({ file: { buffer: addrBuffer }, body: { batchId } }, res);
 
     assert.strictEqual(res.statusCode, 200);
-    assert.strictEqual(res.body.data.length, 0);
     assert.strictEqual(res.body.hold.length, 1);
     assert.strictEqual(res.body.hold[0]['Part No'], partNo);
     assert.strictEqual(res.body.hold[0]['Reason'], 'Missing in Address Master');
+
+    // Part B: a genuinely unresolved part is no longer silently excluded
+    // from the real output — it still produces one row, flagged for manual
+    // correction, rather than existing only in the Hold panel.
+    assert.strictEqual(res.body.data.length, 1);
+    assert.strictEqual(res.body.data[0].PIC, 'MANUAL');
+    assert.strictEqual(res.body.data[0].Shop, 'MANUAL');
+    assert.strictEqual(res.body.data[0].Addr, 'NOT FOUND');
+    assert.strictEqual(res.body.data[0]['Part no.'], partNo);
   } finally {
     await cleanupBatch(batchId);
   }
 });
 
-test('handleProcessAssignAddr: a key with zero valid Address Master rows (all expired) still goes to Hold, unchanged from today', async () => {
+test('handleProcessAssignAddr: a key with zero valid Address Master rows (all expired) still goes to Hold, and now also surfaces as a MANUAL/NOT FOUND row in data (Part B)', async () => {
   const batchId = 'TEST-ADDR-ALLEXPIRED-' + Date.now();
   const partNo = '444555666777';
   await seedBatch(batchId, { partNo, dock: 'ZZ' });
@@ -327,10 +409,13 @@ test('handleProcessAssignAddr: a key with zero valid Address Master rows (all ex
     await handleProcessAssignAddr({ file: { buffer: addrBuffer }, body: { batchId } }, res);
 
     assert.strictEqual(res.statusCode, 200);
-    assert.strictEqual(res.body.data.length, 0);
     assert.strictEqual(res.body.hold.length, 1);
     assert.strictEqual(res.body.hold[0]['Part No'], partNo);
     assert.strictEqual(res.body.hold[0]['Reason'], 'Missing in Address Master');
+
+    assert.strictEqual(res.body.data.length, 1);
+    assert.strictEqual(res.body.data[0].PIC, 'MANUAL');
+    assert.strictEqual(res.body.data[0].Addr, 'NOT FOUND');
   } finally {
     await cleanupBatch(batchId);
   }

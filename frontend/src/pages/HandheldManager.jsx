@@ -19,6 +19,12 @@ const HandheldManager = ({ currentBatchId, previewData, setUploadTab, subscribeT
   const [hasHandheldUpdate, setHasHandheldUpdate] = useState(false);
   const fileInputRef = useRef(null);
 
+  // Parts that failed both direct and name-based Address Master matching
+  // (backend Part B) still produce a real row, flagged PIC:'MANUAL' /
+  // Addr:'NOT FOUND' instead of vanishing into Hold-only visibility — these
+  // need a human to fill in the real PIC/Address before the file goes out.
+  const [manualEdits, setManualEdits] = useState({}); // { [rowIndex]: { pic, addr } }
+
   const handleLoadHandheldPreview = useCallback(async () => {
     try {
       setStep('generating');
@@ -72,6 +78,11 @@ const HandheldManager = ({ currentBatchId, previewData, setUploadTab, subscribeT
 
   const handleDownloadExcel = async () => {
     if (!finalHandheldData || finalHandheldData.length === 0) return;
+    // Defense in depth alongside the disabled button below — this is the
+    // export/finalize action Part C's popup gates: unresolved MANUAL rows
+    // (backend Part B's catch-all for parts that failed all Address Master
+    // matching) must be resolved before the file goes out to the field.
+    if (finalHandheldData.some((row) => row.PIC === 'MANUAL')) return;
 
     try {
       const response = await fetch(`${API_BASE}/api/handheld-assign/export-excel`, {
@@ -140,6 +151,55 @@ const HandheldManager = ({ currentBatchId, previewData, setUploadTab, subscribeT
         (row.ShortAddr === shortAddr && row.PIC === sourcePic) ? { ...row, PIC: targetPic } : row
       ));
     } catch (err) { console.error(err); }
+  };
+
+  // Identified by array index into finalHandheldData rather than any row
+  // field, since PIC/Addr are exactly what's being edited and can't double
+  // as a stable key. Recomputed whenever finalHandheldData changes (a fresh
+  // address-file upload, or the popup's own confirm below).
+  const manualRowIndices = useMemo(() => {
+    if (!finalHandheldData) return [];
+    return finalHandheldData.reduce((acc, row, idx) => {
+      if (row.PIC === 'MANUAL') acc.push(idx);
+      return acc;
+    }, []);
+  }, [finalHandheldData]);
+
+  // Derived, not stored state: pops open automatically whenever unresolved
+  // MANUAL rows exist for the loaded data (a fresh upload, or this batch's
+  // data already being in memory from earlier in the session) — no separate
+  // button opens it, and there's no close/dismiss control on the modal
+  // itself (see below), so it stays up until every row is resolved.
+  const showManualResolveModal = manualRowIndices.length > 0;
+
+  const handleManualEditChange = (idx, field, value) => {
+    // Always keep both keys present — editing just one field (e.g. PIC
+    // first, before Address) must never leave the other as undefined, or
+    // the .trim() checks below throw.
+    setManualEdits((prev) => ({ ...prev, [idx]: { pic: '', addr: '', ...prev[idx], [field]: value } }));
+  };
+
+  const isManualResolutionComplete = manualRowIndices.length > 0 && manualRowIndices.every((idx) => {
+    const edit = manualEdits[idx];
+    return !!edit && (edit.pic || '').trim() !== '' && (edit.addr || '').trim() !== '';
+  });
+
+  // Same persistence pattern as the PIC Manager drag-and-drop reassignment
+  // above (handleDrop): local state only, no backend round-trip — there's
+  // no server endpoint for "manual corrections" and this app doesn't have
+  // one for PIC reassignment either, so this follows the existing
+  // convention rather than inventing a new mechanism.
+  const handleConfirmManualResolve = () => {
+    if (!isManualResolutionComplete) return;
+    setFinalHandheldData((prev) => prev.map((row, idx) => {
+      const edit = manualEdits[idx];
+      if (!edit) return row;
+      return { ...row, PIC: edit.pic.trim(), Addr: edit.addr.trim() };
+    }));
+    // No MANUAL rows left after this, so manualRowIndices recomputes empty
+    // and showManualResolveModal closes on its own (it's derived, not
+    // separately-tracked state) — just clear the now-stale edit buffers.
+    setManualEdits({});
   };
 
   if (!previewData || previewData.length === 0) {
@@ -250,7 +310,9 @@ const HandheldManager = ({ currentBatchId, previewData, setUploadTab, subscribeT
                 <div className="flex gap-3">
                   <button
                     onClick={handleDownloadExcel}
-                    className="bg-white border-2 border-ink text-ink px-5 py-2.5 rounded-xl font-bold text-sm hover:bg-accent/10 transition-all flex items-center gap-2"
+                    disabled={manualRowIndices.length > 0}
+                    title={manualRowIndices.length > 0 ? 'Resolve all MANUAL rows before downloading' : undefined}
+                    className={`border-2 px-5 py-2.5 rounded-xl font-bold text-sm transition-all flex items-center gap-2 ${manualRowIndices.length > 0 ? 'bg-ink/5 border-ink/10 text-ink/30 cursor-not-allowed' : 'bg-white border-ink text-ink hover:bg-accent/10'}`}
                   >
                     <Download size={16} />
                     Download Excel
@@ -279,7 +341,8 @@ const HandheldManager = ({ currentBatchId, previewData, setUploadTab, subscribeT
                           ${dragOverPic === pic ? 'border-accent bg-accent/10 scale-105' : 'border-transparent'}`}
                       >
                         <div className="flex justify-center items-center mb-4 py-2 rounded-xl bg-accent shadow-lg">
-                          <h4 className="font-bold text-ink text-xl">{pic}</h4>
+                          {/* Roughly matches the item boxes' text-sm below it — was text-xl, badly out of proportion with the rest of the card. */}
+                          <h4 className="font-bold text-ink text-sm">{pic}</h4>
                         </div>
 
                         <div className="flex flex-col gap-2 max-h-[250px] overflow-y-auto p-1">
@@ -322,15 +385,15 @@ const HandheldManager = ({ currentBatchId, previewData, setUploadTab, subscribeT
                     </thead>
                     <tbody className="divide-y divide-ink/10">
                       {finalHandheldData.slice(0, 100).map((r, i) => (
-                        <tr key={i} className="hover:bg-[#FAFAF7] transition-colors">
+                        <tr key={i} className={`transition-colors ${r.PIC === 'MANUAL' ? 'bg-orange-50 hover:bg-orange-100/70' : 'hover:bg-[#FAFAF7]'}`}>
                           <td className="px-4 py-3 font-bold bg-[#FAFAF7]/50 text-ink">{r.Shop}</td>
                           <td className="px-4 py-3 text-ink">{r.Dock}</td>
                           <td className="px-4 py-3 text-ink">{r.Supplier}</td>
                           <td className="px-4 py-3 text-ink">{r['Part no.']}</td>
                           <td className="px-4 py-3 truncate max-w-[150px] text-ink">{r['Part name']}</td>
-                          <td className="px-4 py-3 text-blue-700 font-medium bg-blue-50/20">{r.Addr}</td>
+                          <td className={`px-4 py-3 font-medium ${r.PIC === 'MANUAL' ? 'text-orange-600 font-bold' : 'text-blue-700 bg-blue-50/20'}`}>{r.Addr}</td>
                           <td className="px-4 py-3 font-bold text-ink">
-                            <span className="inline-flex items-center justify-center bg-accent text-ink px-2.5 py-1 rounded-full text-xs font-bold shadow-sm">{r.PIC}</span>
+                            <span className={`inline-flex items-center justify-center px-2.5 py-1 rounded-full text-xs font-bold shadow-sm ${r.PIC === 'MANUAL' ? 'bg-orange-500 text-white' : 'bg-accent text-ink'}`}>{r.PIC}</span>
                           </td>
                         </tr>
                       ))}
@@ -388,6 +451,69 @@ const HandheldManager = ({ currentBatchId, previewData, setUploadTab, subscribeT
               )}
             </div>
           )}
+        </div>
+      )}
+
+      {/* Blocking: no close/X button and no backdrop-dismiss handler, unlike
+          every other modal in this app — deliberately cannot be dismissed
+          without resolving every MANUAL row (Part C). */}
+      {showManualResolveModal && (
+        <div className="fixed inset-0 z-[150] flex items-center justify-center bg-black/50 backdrop-blur-sm animate-in fade-in">
+          <div className="bg-white rounded-4xl p-8 w-[640px] max-w-[92vw] shadow-2xl animate-in zoom-in-95">
+            <div className="flex items-center gap-2 text-orange-600 mb-2">
+              <AlertTriangle size={24} />
+              <h3 className="font-display text-xl font-bold text-ink">Resolve Unmatched Parts</h3>
+            </div>
+            <p className="text-sm text-muted mb-6">
+              {manualRowIndices.length} part{manualRowIndices.length === 1 ? '' : 's'} could not be matched in Address Master (marked <span className="font-mono font-bold text-orange-600">MANUAL</span> / <span className="font-mono font-bold text-orange-600">NOT FOUND</span>). Enter the correct PIC and Address for each below — Download Excel stays disabled until every row is filled in.
+            </p>
+
+            <div className="flex flex-col gap-3 max-h-[360px] overflow-y-auto pr-2 mb-6">
+              {manualRowIndices.map((idx) => {
+                const row = finalHandheldData[idx];
+                const edit = manualEdits[idx] || { pic: '', addr: '' };
+                return (
+                  <div key={idx} className="border border-orange-100 bg-orange-50/40 rounded-2xl p-4 flex flex-col gap-3">
+                    <div className="text-xs text-muted">
+                      <span className="font-mono font-bold text-ink">{row['Part no.']}</span> — {row['Part name']} <span className="text-muted/70">(Dock: {row.Dock})</span>
+                    </div>
+                    <div className="grid grid-cols-2 gap-3">
+                      <div className="flex flex-col gap-1">
+                        <label className="text-[11px] font-bold text-muted uppercase">PIC</label>
+                        <input
+                          type="text"
+                          value={edit.pic}
+                          onChange={(e) => handleManualEditChange(idx, 'pic', e.target.value)}
+                          placeholder="e.g. A"
+                          className="bg-white border border-ink/10 rounded-xl px-3 py-2 text-sm font-mono text-ink focus:outline-none focus:ring-2 focus:ring-accent/40"
+                        />
+                      </div>
+                      <div className="flex flex-col gap-1">
+                        <label className="text-[11px] font-bold text-muted uppercase">Address</label>
+                        <input
+                          type="text"
+                          value={edit.addr}
+                          onChange={(e) => handleManualEditChange(idx, 'addr', e.target.value)}
+                          placeholder="e.g. WH01"
+                          className="bg-white border border-ink/10 rounded-xl px-3 py-2 text-sm font-mono text-ink focus:outline-none focus:ring-2 focus:ring-accent/40"
+                        />
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+
+            <div className="flex justify-end">
+              <button
+                onClick={handleConfirmManualResolve}
+                disabled={!isManualResolutionComplete}
+                className={`px-6 py-2.5 rounded-xl font-bold transition-all shadow-md ${isManualResolutionComplete ? 'bg-ink text-accent hover:scale-105' : 'bg-ink/10 text-ink/30 cursor-not-allowed shadow-none'}`}
+              >
+                Confirm & Continue
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </div>
