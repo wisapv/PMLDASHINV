@@ -286,6 +286,78 @@ test('handleProcessAssignAddr: the fallback (part-name) lookup surfaces multiple
   }
 });
 
+test('handleProcessAssignAddr (Part A): a part with no direct Address Master match borrows the resolved address from a sibling part sharing the same Part Procurement PART DESC', async () => {
+  const batchId = 'TEST-ADDR-SIBLING-FALLBACK-' + Date.now();
+  const partDesc = 'BUMPER ASSY FR';
+
+  // X has a direct Address Master match; Y shares X's PART DESC (from Part
+  // Procurement, not Address Master — the real name source per Part A) but
+  // has a genuinely different Dock+PartNo with no Address Master row of its
+  // own at all.
+  await seedBatch(batchId, { partNo: '111111111111', dock: 'ZZ', supplier: 'SUPX', partDesc });
+  await seedBatch(batchId, { partNo: '222222222222', dock: 'YY', supplier: 'SUPY', partDesc });
+
+  try {
+    const addrRows = [
+      ['20180101', '99991231', 'ZZ', '111111111111', 'WH01', '', 'TEST PART'],
+    ];
+    const addrBuffer = bufferFromAoa([ADDR_HEADERS, ...addrRows]);
+
+    const res = mockRes();
+    await handleProcessAssignAddr({ file: { buffer: addrBuffer }, body: { batchId } }, res);
+
+    assert.strictEqual(res.statusCode, 200);
+    assert.strictEqual(res.body.hold.length, 0, 'Y must resolve via the sibling fallback, not fall through to Hold');
+    assert.strictEqual(res.body.data.length, 2);
+
+    const rowX = res.body.data.find((r) => r['Part no.'] === '111111111111');
+    const rowY = res.body.data.find((r) => r['Part no.'] === '222222222222');
+    assert.ok(rowX, 'X (direct match) must still produce its own row');
+    assert.ok(rowY, 'Y (borrowed via sibling fallback) must produce a row too');
+    assert.strictEqual(rowX.Addr, 'WH01');
+    // Y borrows the same physical address X resolved directly, but keeps
+    // its own identity (Dock, Supplier, Part no.) — it isn't a copy of X,
+    // and it goes through the exact same buildPartRows/dedup logic as X.
+    assert.strictEqual(rowY.Addr, 'WH01');
+    assert.strictEqual(rowY.Dock, 'YY');
+    assert.strictEqual(rowY.Supplier, 'SUPY');
+  } finally {
+    await cleanupBatch(batchId);
+  }
+});
+
+test('handleProcessAssignAddr (Part A): a part with a genuinely unique name and no direct match gets no false-positive sibling match, still goes to Hold with no output row (Part B is out of scope here)', async () => {
+  const batchId = 'TEST-ADDR-SIBLING-NOFALSEPOS-' + Date.now();
+
+  // X resolves directly. Z shares no name with X and has no Address Master
+  // row of its own — it must NOT borrow X's address just because X resolved
+  // something in the same batch.
+  await seedBatch(batchId, { partNo: '111111111111', dock: 'ZZ', partDesc: 'BUMPER ASSY FR' });
+  await seedBatch(batchId, { partNo: '333333333333', dock: 'WW', partDesc: 'SUPPORT UREA TANK FILLER PIPE NO.1' });
+
+  try {
+    const addrRows = [
+      ['20180101', '99991231', 'ZZ', '111111111111', 'WH01', '', 'TEST PART'],
+    ];
+    const addrBuffer = bufferFromAoa([ADDR_HEADERS, ...addrRows]);
+
+    const res = mockRes();
+    await handleProcessAssignAddr({ file: { buffer: addrBuffer }, body: { batchId } }, res);
+
+    assert.strictEqual(res.statusCode, 200);
+    assert.strictEqual(res.body.hold.length, 1, 'Z has no sibling to borrow from, so it must genuinely go to Hold');
+    assert.strictEqual(res.body.hold[0]['Part No'], '333333333333');
+    assert.strictEqual(res.body.hold[0]['Reason'], 'Missing in Address Master');
+
+    // Part B (a MANUAL/NOT FOUND output row for unresolved parts) is out of
+    // scope for this task — Z must NOT appear in data at all, same as today.
+    assert.strictEqual(res.body.data.length, 1, 'only X (the direct match) produces a row; Z produces none');
+    assert.strictEqual(res.body.data[0]['Part no.'], '111111111111');
+  } finally {
+    await cleanupBatch(batchId);
+  }
+});
+
 test('handleProcessAssignAddr: a part with no direct match and no part-name match still goes to Hold, unchanged', async () => {
   const batchId = 'TEST-ADDR-NOMATCH-' + Date.now();
   const partNo = '123123123123';
