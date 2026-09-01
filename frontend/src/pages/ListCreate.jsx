@@ -30,6 +30,15 @@ const ListCreate = ({ activeTab, setUploadTab, setActiveModule }) => {
   const [step, setStep] = useState('idle');
   const [uploadStatus, setUploadStatus] = useState({ target: false, proc: false });
   const [previewData, setPreviewData] = useState([]);
+  // True until the mount-time restore below has settled (success, no-merge,
+  // or error) for this ListCreate instance. HandheldManager gates its own
+  // render on previewData, and previewData starts empty on every fresh mount
+  // (Home -> Upload navigation fully remounts this component) — without this
+  // flag, a merged batch would flash "No Base Data Found" on Handheld for
+  // every mount until the fetch below resolves, and if that fetch ever fails
+  // silently, Handheld would be stuck there permanently with no way to tell
+  // "still loading" apart from "genuinely no data".
+  const [isRestoringPreview, setIsRestoringPreview] = useState(true);
 
   const [tbosRemindData, setTbosRemindData] = useState([]);
   const [newPartsData, setNewPartsData] = useState([]);
@@ -117,10 +126,17 @@ const ListCreate = ({ activeTab, setUploadTab, setActiveModule }) => {
   // reflects the batch's stored group_prefix, which the backend only ever
   // writes on a real Merge action — see mainFormatRoute.js.
   const refreshPreviewDataSilently = useCallback(async (batchId) => {
-    if (!batchId) return;
+    if (!batchId) { setIsRestoringPreview(false); return; }
     try {
       const response = await fetch(`${API_BASE}/api/part-list/preview-main?batchId=${batchId}`);
       const result = await response.json();
+      // Temporary diagnostic for the "TBOS doesn't restore to preview after
+      // Home -> Upload navigation" report — remove once that's confirmed
+      // fixed in real usage. Logs exactly what this restore call saw and
+      // decided, so a live repro session shows whether the fetch even ran,
+      // what hasBeenMerged actually was, and whether setStep('preview') was
+      // reached at all.
+      console.log('[TBOS restore] preview-main response', { batchId, ok: response.ok, hasBeenMerged: result?.hasBeenMerged, dataLength: result?.data?.length });
       if (response.ok && result.hasBeenMerged) {
         setPreviewData(result.data || []);
         setTbosRemindData(result.remind || []);
@@ -128,8 +144,15 @@ const ListCreate = ({ activeTab, setUploadTab, setActiveModule }) => {
         const uniqueGroups = [...new Set((result.data || []).map((item) => item['Group ID*']))].filter(Boolean);
         setDownloadFiles(uniqueGroups.map((grp, index) => ({ id: `grp_${index}`, label: `Group: ${grp}`, value: grp, isChecked: true })));
         setStep('preview');
+        console.log('[TBOS restore] restored to preview step', { batchId });
+      } else {
+        console.log('[TBOS restore] not restoring (either not ok or not yet merged)', { batchId });
       }
-    } catch (err) { console.error("Failed to refresh preview data", err); }
+    } catch (err) {
+      console.error("Failed to refresh preview data", err);
+    } finally {
+      setIsRestoringPreview(false);
+    }
   }, []);
 
   // Keep currentBatchId in step with the shared active batch, except while
@@ -143,11 +166,19 @@ const ListCreate = ({ activeTab, setUploadTab, setActiveModule }) => {
   // the preview step (only when the server confirms a real Merge already
   // happened for this batch) instead of forcing them through Merge again.
   useEffect(() => {
+    // Temporary diagnostic for the "TBOS doesn't restore to preview after
+    // Home -> Upload navigation" report — remove once that's confirmed fixed
+    // in real usage. Shows whether this effect even ran on the remount, and
+    // with what activeBatchId/hasLoadedActiveBatch — if the bug is real, one
+    // of these two lines is the place to look: either this effect fires
+    // with unexpected values, or it never fires again at all after Home.
+    console.log('[TBOS restore] mount effect fired', { activeBatchId, hasLoadedActiveBatch, isViewingHistoricalBatch });
     if (!hasLoadedActiveBatch || isViewingHistoricalBatch) return;
 
     const isFirstAssignment = prevActiveBatchIdRef.current === undefined;
     const changed = !isFirstAssignment && prevActiveBatchIdRef.current !== activeBatchId;
     prevActiveBatchIdRef.current = activeBatchId;
+    console.log('[TBOS restore] mount effect deciding', { isFirstAssignment, changed, activeBatchId });
 
     setCurrentBatchId(activeBatchId || '');
     if (changed) resetViewForNewBatch();
@@ -743,6 +774,7 @@ const ListCreate = ({ activeTab, setUploadTab, setActiveModule }) => {
           key={currentBatchId}
           currentBatchId={currentBatchId}
           previewData={previewData}
+          isRestoringPreview={isRestoringPreview}
           setUploadTab={setUploadTab}
           subscribeToEvent={subscribeToEvent}
           setActiveModule={setActiveModule}
