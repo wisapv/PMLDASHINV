@@ -5,7 +5,7 @@ import {
 } from 'lucide-react';
 import { SOCKET_EVENTS, API_BASE } from '../hooks/useActiveBatch';
 
-const HandheldManager = ({ currentBatchId, previewData, setUploadTab, subscribeToEvent, setActiveModule }) => {
+const HandheldManager = ({ currentBatchId, previewData, isRestoringPreview, setUploadTab, subscribeToEvent, setActiveModule }) => {
   const [step, setStep] = useState('idle');
   const [handheldPreview, setHandheldPreview] = useState(null);
   const [addrFileUploaded, setAddrFileUploaded] = useState(false);
@@ -222,6 +222,21 @@ const HandheldManager = ({ currentBatchId, previewData, setUploadTab, subscribeT
       });
     } catch (err) { console.error(err); }
   };
+
+  // previewData comes from TBOS's own mount-time restore (see ListCreate's
+  // refreshPreviewDataSilently), which starts empty and only populates once
+  // that fetch resolves. Without distinguishing "still restoring" from
+  // "genuinely no data", a merged batch would flash — or on a slow/failed
+  // restore, get permanently stuck on — the "No Base Data Found" prompt
+  // below on every Home -> Upload remount, even though data is on its way.
+  if (isRestoringPreview) {
+    return (
+      <div className="bg-white border-2 border-dashed border-ink/10 rounded-4xl p-20 flex flex-col items-center justify-center text-center animate-in fade-in">
+        <Loader2 size={40} className="animate-spin text-muted mb-4" />
+        <p className="text-muted">Restoring batch data…</p>
+      </div>
+    );
+  }
 
   if (!previewData || previewData.length === 0) {
     return (
