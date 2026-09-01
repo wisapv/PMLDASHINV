@@ -6,6 +6,7 @@ import Detail from './pages/Detail';
 import ListCreate from './pages/ListCreate';
 import Home from './pages/Home';
 import TemplateManager from './pages/TemplateManager'
+import SendPartList from './pages/SendPartList'
 
 function App() {
   const [activeModule, setActiveModule] = useState('home');
@@ -33,7 +34,7 @@ function App() {
           
           {/* ส่ง uploadTab ไปให้ ListCreate เพื่อเลือกว่าจะโชว์ TBOS หรือ Handheld */}
           {/* เปลี่ยนจากแบบเดิมเป็นแบบนี้ */}
-          {activeModule === 'upload' && <ListCreate activeTab={uploadTab} setUploadTab={setUploadTab} />}
+          {activeModule === 'upload' && <ListCreate activeTab={uploadTab} setUploadTab={setUploadTab} setActiveModule={setActiveModule} />}
           {activeModule === 'template' && <TemplateManager />}
           {activeModule === 'dashboard' && (
             <>
@@ -48,6 +49,8 @@ function App() {
               Inventory Result Page (กำลังพัฒนา...)
             </div>
           )}
+
+          {activeModule === 'send-part-list' && <SendPartList onBack={() => setActiveModule('upload')} />}
 
         </div>
       </div>

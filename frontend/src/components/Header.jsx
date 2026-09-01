@@ -68,7 +68,8 @@ const Header = ({ activeTab, setActiveTab, activeModule, uploadTab, setUploadTab
           // หน้าอื่นๆ โชว์เป็นแค่ป้ายชื่อ
           <div className="text-sm font-bold text-ink uppercase tracking-widest bg-white px-8 py-2.5 rounded-full shadow-[0_2px_10px_rgba(20,20,15,0.05)] border border-ink/[0.05]">
              {activeModule === 'home' ? 'Welcome to System' :
-              activeModule === 'result' ? 'Inventory Result' : 'System'}
+              activeModule === 'result' ? 'Inventory Result' :
+              activeModule === 'send-part-list' ? 'Send Part List' : 'System'}
           </div>
 
         )}

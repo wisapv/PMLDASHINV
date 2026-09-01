@@ -524,3 +524,106 @@ test('handleSaveFinalData (Task 1): a non-array data payload is rejected with 40
   await handleSaveFinalData({ body: { batchId: 'TEST-ADDR-SAVEBADTYPE', data: 'not-an-array' } }, res);
   assert.strictEqual(res.statusCode, 400);
 });
+
+test('handleProcessAssignAddr (Task 2a - Pass 3): a part unresolved by direct match and by name-sibling match still borrows via a 5-char Part No prefix match with a directly-resolved sibling', async () => {
+  const batchId = 'TEST-ADDR-PREFIX-FALLBACK-' + Date.now();
+
+  // X has a direct Address Master match. Y shares X's first 5 Part No
+  // characters ('77916') but has its own distinct PART DESC (so Pass 2's
+  // name fallback can't resolve it) and its own distinct Dock+PartNo (so
+  // Pass 1's direct match can't resolve it either) — only Pass 3's prefix
+  // fallback can resolve Y.
+  await seedBatch(batchId, { partNo: '77916K05000', dock: 'ZZ', supplier: 'SUPX', partDesc: 'PART X UNIQUE NAME' });
+  await seedBatch(batchId, { partNo: '77916Z09999', dock: 'QQ', supplier: 'SUPY', partDesc: 'PART Y UNIQUE NAME' });
+
+  try {
+    const addrRows = [
+      ['20180101', '99991231', 'ZZ', '77916K05000', 'WH01', '', 'TEST PART'],
+    ];
+    const addrBuffer = bufferFromAoa([ADDR_HEADERS, ...addrRows]);
+
+    const res = mockRes();
+    await handleProcessAssignAddr({ file: { buffer: addrBuffer }, body: { batchId } }, res);
+
+    assert.strictEqual(res.statusCode, 200);
+    assert.strictEqual(res.body.hold.length, 0, 'Y must resolve via the prefix fallback, not fall through to Hold');
+    assert.strictEqual(res.body.data.length, 2);
+
+    const rowX = res.body.data.find((r) => r['Part no.'] === '77916K05000');
+    const rowY = res.body.data.find((r) => r['Part no.'] === '77916Z09999');
+    assert.ok(rowX, 'X (direct match) must still produce its own row');
+    assert.ok(rowY, 'Y (borrowed via the prefix fallback) must produce a row too');
+    assert.strictEqual(rowX.Addr, 'WH01');
+    assert.strictEqual(rowY.Addr, 'WH01');
+    assert.strictEqual(rowY.Dock, 'QQ');
+    assert.strictEqual(rowY.Supplier, 'SUPY');
+  } finally {
+    await cleanupBatch(batchId);
+  }
+});
+
+test('handleProcessAssignAddr (Task 2a - Pass 3): a part sharing no prefix with anything resolved still goes to Hold, unchanged', async () => {
+  const batchId = 'TEST-ADDR-PREFIX-NOMATCH-' + Date.now();
+
+  // X resolves directly (prefix '77916'). Z shares no name, no direct
+  // match, and no 5-char Part No prefix with X (prefix '99999') — it must
+  // still genuinely go to Hold, same as before this task.
+  await seedBatch(batchId, { partNo: '77916K05000', dock: 'ZZ', partDesc: 'PART X UNIQUE NAME' });
+  await seedBatch(batchId, { partNo: '99999Z09999', dock: 'WW', partDesc: 'PART Z UNIQUE NAME' });
+
+  try {
+    const addrRows = [
+      ['20180101', '99991231', 'ZZ', '77916K05000', 'WH01', '', 'TEST PART'],
+    ];
+    const addrBuffer = bufferFromAoa([ADDR_HEADERS, ...addrRows]);
+
+    const res = mockRes();
+    await handleProcessAssignAddr({ file: { buffer: addrBuffer }, body: { batchId } }, res);
+
+    assert.strictEqual(res.statusCode, 200);
+    assert.strictEqual(res.body.hold.length, 1, 'Z has no prefix sibling to borrow from, so it must genuinely go to Hold');
+    assert.strictEqual(res.body.hold[0]['Part No'], '99999Z09999');
+    assert.strictEqual(res.body.hold[0]['Reason'], 'Missing in Address Master');
+    assert.strictEqual(res.body.data.length, 1, 'only X (the direct match) produces a row; Z produces none');
+  } finally {
+    await cleanupBatch(batchId);
+  }
+});
+
+test('handleProcessAssignAddr (Task 2a - Pass 3): the prefix fallback is built only from Pass 1 direct matches, never from a Pass 2 name-borrowed resolution', async () => {
+  const batchId = 'TEST-ADDR-PREFIX-NOSOURCEFROMPASS2-' + Date.now();
+
+  // X resolves directly (prefix '77916'). W has no direct match but shares
+  // X's PART DESC, so Pass 2 resolves W by borrowing X's address (prefix
+  // '55555', unrelated to X's prefix). Q shares W's prefix ('55555') but not
+  // W's name, and has no direct match of its own. If the prefix fallback
+  // were (incorrectly) sourced from W's Pass 2 resolution, Q would resolve
+  // by borrowing a second time, one step further removed from Address
+  // Master. It must not: Q must still go to Hold.
+  await seedBatch(batchId, { partNo: '77916K05000', dock: 'ZZ', supplier: 'SUPX', partDesc: 'SHARED NAME' });
+  await seedBatch(batchId, { partNo: '55555Z09999', dock: 'YY', supplier: 'SUPY', partDesc: 'SHARED NAME' });
+  await seedBatch(batchId, { partNo: '55555Q00000', dock: 'WW', supplier: 'SUPZ', partDesc: 'UNIQUE NAME FOR Q' });
+
+  try {
+    const addrRows = [
+      ['20180101', '99991231', 'ZZ', '77916K05000', 'WH01', '', 'TEST PART'],
+    ];
+    const addrBuffer = bufferFromAoa([ADDR_HEADERS, ...addrRows]);
+
+    const res = mockRes();
+    await handleProcessAssignAddr({ file: { buffer: addrBuffer }, body: { batchId } }, res);
+
+    assert.strictEqual(res.statusCode, 200);
+    // X resolves directly, W resolves via Pass 2 (name sibling of X).
+    assert.strictEqual(res.body.data.length, 2);
+    assert.ok(res.body.data.find((r) => r['Part no.'] === '77916K05000'), 'X (direct match) must produce a row');
+    assert.ok(res.body.data.find((r) => r['Part no.'] === '55555Z09999'), 'W (Pass 2 name fallback) must produce a row');
+    assert.ok(!res.body.data.find((r) => r['Part no.'] === '55555Q00000'), 'Q must not resolve via a prefix borrowed from a Pass 2 resolution');
+
+    assert.strictEqual(res.body.hold.length, 1, 'Q must genuinely go to Hold, unresolved by all three passes');
+    assert.strictEqual(res.body.hold[0]['Part No'], '55555Q00000');
+    assert.strictEqual(res.body.hold[0]['Reason'], 'Missing in Address Master');
+  } finally {
+    await cleanupBatch(batchId);
+  }
+});

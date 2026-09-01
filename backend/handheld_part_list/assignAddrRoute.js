@@ -272,6 +272,15 @@ async function handleProcessAssignAddr(req, res) {
         // DESC); Pass 2 then lets every non-matching part look up siblings
         // resolved in Pass 1, regardless of which one happened to come first.
         const resolvedByName = new Map();
+        // Third fallback layer, keyed by the first 5 characters of Part
+        // Procurement's own PART # (e.g. '779160K05000' -> '77916') — parts
+        // that share a manufacturing series/prefix are commonly stored at the
+        // same address even when their full part numbers and PART DESC both
+        // differ. Populated ONLY from genuine Pass 1 direct addrMap matches
+        // below, never from Pass 2's name-fallback resolutions — otherwise a
+        // borrowed address could be borrowed again, one step further removed
+        // from anything Address Master actually said.
+        const resolvedByPartPrefix = new Map();
         const pendingFallback = [];
 
         baseDataList.forEach(item => {
@@ -280,7 +289,8 @@ async function handleProcessAssignAddr(req, res) {
             const ppPartNo = String(p['PART #'] || p['PART # '] || '').replace(/\s/g, '');
             const addrLookupKey = (ppDockValue + ppPartNo).replace(/-/g, '');
 
-            let addrInfoList = addrMap.get(addrLookupKey);
+            const directAddrMatch = addrMap.get(addrLookupKey);
+            let addrInfoList = directAddrMatch;
 
             if (!addrInfoList || addrInfoList.length === 0) {
                 const legacyPartNameKey = String(p['PART DESC'] || p['PART DESC '] || '').trim().toUpperCase();
@@ -291,7 +301,8 @@ async function handleProcessAssignAddr(req, res) {
             const source = String(t['Source'] || t['Source '] || '').trim();
             const ppSupplier = String(p['SUPL'] || p['SUPL '] || '').trim();
             const partDescKey = String(p['PART DESC'] || p['PART DESC '] || '').trim().toUpperCase();
-            const ctx = { ppDock, ppSupplier, groupPrefix, source, p, partDescKey };
+            const partPrefixKey = String(p['PART #'] || p['PART # '] || '').trim().slice(0, 5);
+            const ctx = { ppDock, ppSupplier, groupPrefix, source, p, partDescKey, partPrefixKey };
 
             if (addrInfoList.length > 0) {
                 finalData.push(...buildPartRows(addrInfoList, ctx));
@@ -300,13 +311,18 @@ async function handleProcessAssignAddr(req, res) {
                     if (!resolvedByName.has(partDescKey)) resolvedByName.set(partDescKey, []);
                     resolvedByName.get(partDescKey).push(...addrInfoList);
                 }
+
+                if (partPrefixKey && directAddrMatch && directAddrMatch.length > 0) {
+                    if (!resolvedByPartPrefix.has(partPrefixKey)) resolvedByPartPrefix.set(partPrefixKey, []);
+                    resolvedByPartPrefix.get(partPrefixKey).push(...directAddrMatch);
+                }
             } else {
                 pendingFallback.push(ctx);
             }
         });
 
         pendingFallback.forEach(ctx => {
-            const { ppDock, p, partDescKey } = ctx;
+            const { ppDock, p, partDescKey, partPrefixKey } = ctx;
             const entries = partDescKey ? (resolvedByName.get(partDescKey) || []) : [];
 
             if (entries.length > 0) {
@@ -314,9 +330,17 @@ async function handleProcessAssignAddr(req, res) {
                 return;
             }
 
-            // Still genuinely unresolved by both passes: goes to Hold exactly
-            // as before this task — no output row is added for it here
-            // (that's a separate, deferred piece of work, out of scope here).
+            const prefixEntries = partPrefixKey ? (resolvedByPartPrefix.get(partPrefixKey) || []) : [];
+
+            if (prefixEntries.length > 0) {
+                finalData.push(...buildPartRows(prefixEntries, ctx));
+                return;
+            }
+
+            // Still genuinely unresolved by all three passes: goes to Hold
+            // exactly as before this task — no output row is added for it
+            // here (that's a separate, deferred piece of work, out of scope
+            // here).
             holdData.push({
                 "Dock": ppDock,
                 "Supplier": blankOrTrim(p['SUPL'] || p['SUPL ']),

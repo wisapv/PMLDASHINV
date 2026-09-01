@@ -1,11 +1,11 @@
 import React, { useState, useRef, useMemo, useEffect, useCallback } from 'react';
 import {
   Database, Loader2, CheckCircle2, MapPin,
-  AlertCircle, AlertTriangle, GripVertical, Settings2, Download, RefreshCw
+  AlertCircle, AlertTriangle, GripVertical, Settings2, Download, RefreshCw, Send
 } from 'lucide-react';
 import { SOCKET_EVENTS, API_BASE } from '../hooks/useActiveBatch';
 
-const HandheldManager = ({ currentBatchId, previewData, setUploadTab, subscribeToEvent }) => {
+const HandheldManager = ({ currentBatchId, previewData, setUploadTab, subscribeToEvent, setActiveModule }) => {
   const [step, setStep] = useState('idle');
   const [handheldPreview, setHandheldPreview] = useState(null);
   const [addrFileUploaded, setAddrFileUploaded] = useState(false);
@@ -462,6 +462,14 @@ const HandheldManager = ({ currentBatchId, previewData, setUploadTab, subscribeT
                             ))}
                           </tbody>
                         </table>
+                      </div>
+                      <div className="flex justify-end mt-4">
+                        <button
+                          onClick={() => setActiveModule && setActiveModule('send-part-list')}
+                          className="flex items-center gap-2 bg-orange-600 text-white px-5 py-2.5 rounded-xl font-bold text-xs hover:bg-orange-700 transition-colors shadow-sm"
+                        >
+                          <Send size={14} /> Send Part List
+                        </button>
                       </div>
                     </div>
                   )}

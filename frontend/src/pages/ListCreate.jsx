@@ -17,7 +17,7 @@ function validatePrefixInput(value) {
   return '';
 }
 
-const ListCreate = ({ activeTab, setUploadTab }) => {
+const ListCreate = ({ activeTab, setUploadTab, setActiveModule }) => {
   const { activeBatchId, hasLoadedActiveBatch, isSocketConnected, subscribeToEvent, startNewBatch } = useActiveBatch();
 
   const [subTab, setSubTab] = useState('new');
@@ -745,6 +745,7 @@ const ListCreate = ({ activeTab, setUploadTab }) => {
           previewData={previewData}
           setUploadTab={setUploadTab}
           subscribeToEvent={subscribeToEvent}
+          setActiveModule={setActiveModule}
         />
       </div>
 
