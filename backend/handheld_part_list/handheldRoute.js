@@ -9,7 +9,7 @@ const router = express.Router();
 
 async function handlePreviewHandheld(req, res) {
   try {
-    const { batchId } = req.query;
+    const { batchId, silent } = req.query;
     if (!batchId) return res.status(400).json({ error: 'Missing batchId' });
 
     const db = await connectDB();
@@ -65,7 +65,13 @@ async function handlePreviewHandheld(req, res) {
       }
     }
 
-    emitEvent(EVENTS.HANDHELD_UPDATED, { batchId });
+    // silent=true marks a background restore (e.g. the frontend silently
+    // repopulating this page's own state after a mount/reload) rather than
+    // someone actually regenerating the base format — broadcasting
+    // HANDHELD_UPDATED for that would come back to the very same client
+    // that just restored itself and either loop into refetching itself or
+    // show a spurious "updated by another user" banner.
+    if (!silent) emitEvent(EVENTS.HANDHELD_UPDATED, { batchId });
     res.json({ message: 'Success', count: previewData.length, data: previewData, duplicateKeys });
   } catch (error) {
     res.status(500).json({ error: 'Failed to generate handheld preview' });

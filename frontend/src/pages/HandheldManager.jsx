@@ -29,6 +29,39 @@ const HandheldManager = ({ currentBatchId, previewData, setUploadTab, subscribeT
     } catch(err) { alert("Server Error"); setStep('idle'); }
   }, [currentBatchId]);
 
+  // Restores the Base Preview (section 1) on mount — this is purely derived
+  // from Target R/O + Part Procurement, both already persisted in the DB,
+  // so unlike the address-assigned result below it survives a full page
+  // reload, not just switching tabs within the app. No spinner/step change
+  // (unlike the button above) and silent=true so the backend doesn't
+  // broadcast HANDHELD_UPDATED back at this same client.
+  //
+  // What this deliberately does NOT restore: finalHandheldData / holdData /
+  // remindData (the address-assigned result from uploading Part addr.xls)
+  // and any manual PIC drag-and-drop reassignment — neither is persisted
+  // anywhere server-side (process-assign-addr never writes to the DB, and
+  // the PIC Manager's reassignments are local React state only, same as
+  // the base preview's own live-update handling above already documents).
+  // After a genuine reload those are honestly gone; Part addr.xls has to be
+  // re-uploaded. Persisting them is a larger, separate piece of work.
+  useEffect(() => {
+    if (!currentBatchId) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch(`${API_BASE}/api/handheld/preview-handheld?batchId=${currentBatchId}&silent=true`);
+        if (cancelled) return;
+        if (res.ok) {
+          const result = await res.json();
+          if (!cancelled) setHandheldPreview(result.data);
+        }
+        // A 404 (no raw data yet for this batch) is expected and left alone
+        // — handheldPreview stays null, showing the normal pre-generate state.
+      } catch (err) { console.error('Failed to restore handheld base preview', err); }
+    })();
+    return () => { cancelled = true; };
+  }, [currentBatchId]);
+
   // Same-batch live updates. The base preview (a plain GET) can be safely
   // auto-refreshed, but only while the PIC Manager is closed — reassignments
   // made there are local-only (never sent to the backend, see handleDrop

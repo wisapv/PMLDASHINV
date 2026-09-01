@@ -335,6 +335,44 @@ test('handlePreviewMain: a batch that never had a prefix set falls back to SR481
   }
 });
 
+test('handlePreviewMain: hasBeenMerged is false for a batch with only uploads and no explicit Merge, even though data is already non-empty', async () => {
+  const batchId = 'TEST-GP-NOTMERGED-' + Date.now();
+  await seedBatch(batchId);
+  try {
+    // No prefix — mirrors the frontend's passive/background restore call
+    // (refreshPreviewDataSilently), not an explicit Merge click.
+    const res = mockRes();
+    await handlePreviewMain({ query: { batchId } }, res);
+
+    // buildMainFormatRows computes straight from stored raw data regardless
+    // of whether Merge was ever clicked, so data is already non-empty here —
+    // this is exactly why a frontend restore can't use "data.length > 0" as
+    // its "was this genuinely merged" signal.
+    assert.ok(res.body.data.length > 0, 'sanity check: preview data is computable without an explicit merge');
+    assert.strictEqual(res.body.hasBeenMerged, false);
+  } finally {
+    await cleanupBatch(batchId);
+    await cleanupPrefixHistory('SR481D');
+  }
+});
+
+test('handlePreviewMain: hasBeenMerged is true immediately after an explicit Merge (prefix provided), and stays true on a later passive re-view', async () => {
+  const batchId = 'TEST-GP-MERGEDTRUE-' + Date.now();
+  await seedBatch(batchId);
+  try {
+    const mergeRes = mockRes();
+    await handlePreviewMain({ query: { batchId, prefix: 'MERGEFLAG' } }, mergeRes);
+    assert.strictEqual(mergeRes.body.hasBeenMerged, true);
+
+    const laterRes = mockRes();
+    await handlePreviewMain({ query: { batchId } }, laterRes);
+    assert.strictEqual(laterRes.body.hasBeenMerged, true, 'a later passive re-view must still report the batch as merged');
+  } finally {
+    await cleanupBatch(batchId);
+    await cleanupPrefixHistory('MERGEFLAG');
+  }
+});
+
 test('handlePreviewMain: invalid prefix (each disallowed character, and empty string) is rejected with 400 and does not overwrite the stored value', async () => {
   const batchId = 'TEST-GP-INVALID-' + Date.now();
   await seedBatch(batchId);

@@ -7,7 +7,7 @@ const archiver = require('archiver');
 const { buildPpIndex, cleanTargetRow, computeShop, createFirstOccurrenceTracker, findNewPartsSinceBatch } = require('../lib/partMatching');
 const { buildMatchKey } = require('../lib/keyUtils');
 const { getPreviousTgRows } = require('../lib/batches');
-const { validateGroupPrefix, getStoredGroupPrefix, setStoredGroupPrefix, recordGroupPrefixUsage } = require('../lib/groupPrefix');
+const { validateGroupPrefix, getStoredGroupPrefix, hasStoredGroupPrefix, setStoredGroupPrefix, recordGroupPrefixUsage } = require('../lib/groupPrefix');
 const { emitEvent, EVENTS } = require('../lib/socketHub');
 const { blankOrTrim, toExcelCellValue } = require('../lib/textUtils');
 
@@ -229,12 +229,22 @@ async function handlePreviewMain(req, res) {
     const isRealMergeAction = prefix !== undefined && prefix !== null;
 
     let groupPrefix;
+    let hasBeenMerged;
     if (isRealMergeAction) {
       const { valid, error } = validateGroupPrefix(prefix);
       if (!valid) return res.status(400).json({ error });
       await setStoredGroupPrefix(db, batchId, prefix);
       groupPrefix = prefix;
+      hasBeenMerged = true;
     } else {
+      // A passive re-view (no prefix) must tell the caller whether this
+      // batch has ever actually been merged before — distinct from whether
+      // buildMainFormatRows below happens to compute non-empty rows, which
+      // is true as soon as valid Target R/O + Part Procurement rows exist,
+      // even if Merge itself was never clicked. Callers restoring UI state
+      // from this response (e.g. the frontend re-syncing after navigating
+      // away and back) need the real signal, not the coincidental one.
+      hasBeenMerged = await hasStoredGroupPrefix(db, batchId);
       groupPrefix = await getStoredGroupPrefix(db, batchId);
     }
     // Every prefix actually used for a batch — whether explicitly provided or
@@ -255,7 +265,7 @@ async function handlePreviewMain(req, res) {
 
     if (isRealMergeAction) emitEvent(EVENTS.BATCH_MERGE_UPDATED, { batchId });
     // 🔴 ส่งข้อมูล remind กลับไปพร้อมกัน
-    res.json({ message: 'Success', count: previewData.length, data: previewData, remind: remindData, newParts, duplicateKeys });
+    res.json({ message: 'Success', count: previewData.length, data: previewData, remind: remindData, newParts, duplicateKeys, hasBeenMerged });
   } catch (error) { res.status(500).json({ error: 'Failed' }); }
 }
 
