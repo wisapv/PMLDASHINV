@@ -62,14 +62,45 @@ const HandheldManager = ({ currentBatchId, previewData, setUploadTab, subscribeT
     return () => { cancelled = true; };
   }, [currentBatchId]);
 
+  // Restores the address-assigned result (section 2: Kanban/Lineside rows,
+  // PIC assignments, Hold/Remind) on mount from handheld_results — this is
+  // now persisted server-side (process-assign-addr upserts it, and PIC
+  // drag-and-drop reassignments save back to it too, see handleDrop below),
+  // completing what the base-preview-only restore above used to leave as a
+  // reported limitation. A 404 means process-assign-addr has never been run
+  // for this batch — the normal "please upload Part addr.xls" prompt (Part
+  // addr.xls) is left alone in that case, unchanged.
+  useEffect(() => {
+    if (!currentBatchId) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch(`${API_BASE}/api/handheld-assign/final-data?batchId=${currentBatchId}`);
+        if (cancelled) return;
+        if (res.ok) {
+          const result = await res.json();
+          if (cancelled) return;
+          setFinalHandheldData(result.data);
+          setHoldData(result.hold);
+          setRemindData(result.remind);
+          setAddrFileUploaded(true);
+        }
+        // A 404 (process-assign-addr never run for this batch) is expected
+        // and left alone — the normal upload prompt stays in place.
+      } catch (err) { console.error('Failed to restore handheld final data', err); }
+    })();
+    return () => { cancelled = true; };
+  }, [currentBatchId]);
+
   // Same-batch live updates. The base preview (a plain GET) can be safely
   // auto-refreshed, but only while the PIC Manager is closed — reassignments
-  // made there are local-only (never sent to the backend, see handleDrop
-  // below), so overwriting state while it's open risks silently discarding
-  // work in progress. The address/PIC results (finalHandheldData) can't be
-  // silently refetched at all — producing them requires re-uploading the
-  // address file, there is no GET for "the last result" — so those cases
-  // just surface a non-blocking banner instead of an automatic overwrite.
+  // made there are now saved to the backend (see handleDrop below), but
+  // overwriting local state while the PIC Manager is open still risks
+  // clobbering a reassignment mid-drag, so this stays deliberately
+  // conservative there. The address/PIC results (finalHandheldData) can't be
+  // silently refetched from a live-update push — the base data may have
+  // changed too, and only re-uploading Address Master recomputes the match —
+  // so that case just surfaces a non-blocking banner instead.
   useEffect(() => {
     const unsubscribe = subscribeToEvent(SOCKET_EVENTS.HANDHELD_UPDATED, (payload) => {
       if (payload.batchId !== currentBatchId) return;
@@ -161,6 +192,19 @@ const HandheldManager = ({ currentBatchId, previewData, setUploadTab, subscribeT
     setDragOverPic(null);
   };
 
+  // Fire-and-forget, same as the base-preview restore's error handling —
+  // the local reassignment already applied optimistically, so a failed save
+  // here shouldn't interrupt the drag interaction with a blocking alert.
+  const saveFinalDataToServer = async (data) => {
+    try {
+      await fetch(`${API_BASE}/api/handheld-assign/final-data`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ batchId: currentBatchId, data }),
+      });
+    } catch (err) { console.error('Failed to persist PIC reassignment', err); }
+  };
+
   const handleDrop = (e, targetPic) => {
     e.preventDefault();
     setDragOverPic(null);
@@ -169,9 +213,13 @@ const HandheldManager = ({ currentBatchId, previewData, setUploadTab, subscribeT
 
     try {
       const { shortAddr, sourcePic } = JSON.parse(dataStr);
-      setFinalHandheldData(prev => prev.map(row =>
-        (row.ShortAddr === shortAddr && row.PIC === sourcePic) ? { ...row, PIC: targetPic } : row
-      ));
+      setFinalHandheldData(prev => {
+        const next = prev.map(row =>
+          (row.ShortAddr === shortAddr && row.PIC === sourcePic) ? { ...row, PIC: targetPic } : row
+        );
+        saveFinalDataToServer(next);
+        return next;
+      });
     } catch (err) { console.error(err); }
   };
 

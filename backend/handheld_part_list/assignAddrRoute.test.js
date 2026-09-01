@@ -2,7 +2,7 @@ const test = require('node:test');
 const assert = require('node:assert');
 const xlsx = require('xlsx');
 const { connectDB, initDB } = require('../database');
-const { evaluatePicAndShop, generateExcelBuffer, handleProcessAssignAddr } = require('./assignAddrRoute');
+const { evaluatePicAndShop, generateExcelBuffer, handleProcessAssignAddr, handleGetFinalData, handleSaveFinalData } = require('./assignAddrRoute');
 
 // Mirrors the Group formula in createFinalRow('SR481D' + finalShop + source) so
 // the test can confirm Group follows the fixed Shop value without duplicating logic.
@@ -53,6 +53,7 @@ async function cleanupBatch(batchId) {
   await db.run('DELETE FROM target_ro WHERE batch_id = ?', batchId);
   await db.run('DELETE FROM part_procurement WHERE batch_id = ?', batchId);
   await db.run('DELETE FROM upload_batches WHERE batch_id = ?', batchId);
+  await db.run('DELETE FROM handheld_results WHERE batch_id = ?', batchId);
 }
 
 test.before(async () => {
@@ -406,4 +407,120 @@ test('handleProcessAssignAddr: a key with zero valid Address Master rows (all ex
   } finally {
     await cleanupBatch(batchId);
   }
+});
+
+test('handleProcessAssignAddr (Task 1): a successful run upserts finalData/holdData/remindData into handheld_results, without changing the response shape', async () => {
+  const batchId = 'TEST-ADDR-PERSIST-' + Date.now();
+  const partNo = '555444333222';
+  await seedBatch(batchId, { partNo, dock: 'ZZ' });
+
+  try {
+    const addrRows = [
+      ['20180101', '99991231', 'ZZ', partNo, 'WH01', '', 'TEST PART'],
+    ];
+    const addrBuffer = bufferFromAoa([ADDR_HEADERS, ...addrRows]);
+
+    const res = mockRes();
+    await handleProcessAssignAddr({ file: { buffer: addrBuffer }, body: { batchId } }, res);
+
+    assert.strictEqual(res.statusCode, 200);
+    // Response shape is unchanged — still success/data/hold/remind/duplicateKeys.
+    assert.deepStrictEqual(Object.keys(res.body).sort(), ['data', 'duplicateKeys', 'hold', 'remind', 'success'].sort());
+
+    const db = await connectDB();
+    const row = await db.get('SELECT final_data, hold_data, remind_data, updated_at FROM handheld_results WHERE batch_id = ?', batchId);
+    assert.ok(row, 'a row must be upserted for this batch');
+    assert.deepStrictEqual(JSON.parse(row.final_data), res.body.data);
+    assert.deepStrictEqual(JSON.parse(row.hold_data), res.body.hold);
+    assert.deepStrictEqual(JSON.parse(row.remind_data), res.body.remind);
+    assert.ok(row.updated_at);
+  } finally {
+    await cleanupBatch(batchId);
+  }
+});
+
+test('handleGetFinalData (Task 1): returns persisted data for a processed batch, and a clear 404 for a batch never processed', async () => {
+  const batchId = 'TEST-ADDR-GETFINAL-' + Date.now();
+  const partNo = '111222333444';
+  await seedBatch(batchId, { partNo, dock: 'ZZ' });
+
+  try {
+    // Not processed yet — must be a clear "not found", not an empty success.
+    const notFoundRes = mockRes();
+    await handleGetFinalData({ query: { batchId } }, notFoundRes);
+    assert.strictEqual(notFoundRes.statusCode, 404);
+    assert.ok(notFoundRes.body.error);
+
+    const addrRows = [
+      ['20180101', '99991231', 'ZZ', partNo, 'WH01', '', 'TEST PART'],
+    ];
+    const addrBuffer = bufferFromAoa([ADDR_HEADERS, ...addrRows]);
+    const processRes = mockRes();
+    await handleProcessAssignAddr({ file: { buffer: addrBuffer }, body: { batchId } }, processRes);
+
+    const foundRes = mockRes();
+    await handleGetFinalData({ query: { batchId } }, foundRes);
+    assert.strictEqual(foundRes.statusCode, 200);
+    assert.strictEqual(foundRes.body.success, true);
+    assert.deepStrictEqual(foundRes.body.data, processRes.body.data);
+    assert.deepStrictEqual(foundRes.body.hold, processRes.body.hold);
+    assert.deepStrictEqual(foundRes.body.remind, processRes.body.remind);
+  } finally {
+    await cleanupBatch(batchId);
+  }
+});
+
+test('handleGetFinalData (Task 1): missing batchId is a 400', async () => {
+  const res = mockRes();
+  await handleGetFinalData({ query: {} }, res);
+  assert.strictEqual(res.statusCode, 400);
+});
+
+test('handleSaveFinalData (Task 1): a PIC drag-and-drop reassignment persists and is visible via a re-fetch of final-data', async () => {
+  const batchId = 'TEST-ADDR-SAVEFINAL-' + Date.now();
+  const partNo = '666777888999';
+  await seedBatch(batchId, { partNo, dock: 'ZZ' });
+
+  try {
+    const addrRows = [
+      ['20180101', '99991231', 'ZZ', partNo, 'WH01', '', 'TEST PART'],
+    ];
+    const addrBuffer = bufferFromAoa([ADDR_HEADERS, ...addrRows]);
+    const processRes = mockRes();
+    await handleProcessAssignAddr({ file: { buffer: addrBuffer }, body: { batchId } }, processRes);
+    assert.strictEqual(processRes.body.data.length, 1);
+
+    // Simulate the frontend's PIC drag-and-drop: reassign PIC on the one row.
+    const reassigned = processRes.body.data.map((row) => ({ ...row, PIC: 'MANUAL-Z' }));
+    const saveRes = mockRes();
+    await handleSaveFinalData({ body: { batchId, data: reassigned } }, saveRes);
+    assert.strictEqual(saveRes.statusCode, 200);
+    assert.strictEqual(saveRes.body.success, true);
+
+    const refetchRes = mockRes();
+    await handleGetFinalData({ query: { batchId } }, refetchRes);
+    assert.strictEqual(refetchRes.body.data[0].PIC, 'MANUAL-Z', 'the reassignment must be visible via a fresh fetch, not just in-memory');
+    // Hold/Remind must be untouched by a PIC-only save.
+    assert.deepStrictEqual(refetchRes.body.hold, processRes.body.hold);
+    assert.deepStrictEqual(refetchRes.body.remind, processRes.body.remind);
+  } finally {
+    await cleanupBatch(batchId);
+  }
+});
+
+test('handleSaveFinalData (Task 1): saving for a batch that was never processed is a clear 404, not a silent no-op success', async () => {
+  const batchId = 'TEST-ADDR-SAVENOPROCESS-' + Date.now();
+  try {
+    const res = mockRes();
+    await handleSaveFinalData({ body: { batchId, data: [{ PIC: 'A' }] } }, res);
+    assert.strictEqual(res.statusCode, 404);
+  } finally {
+    await cleanupBatch(batchId);
+  }
+});
+
+test('handleSaveFinalData (Task 1): a non-array data payload is rejected with 400', async () => {
+  const res = mockRes();
+  await handleSaveFinalData({ body: { batchId: 'TEST-ADDR-SAVEBADTYPE', data: 'not-an-array' } }, res);
+  assert.strictEqual(res.statusCode, 400);
 });

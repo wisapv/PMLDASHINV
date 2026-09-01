@@ -46,6 +46,18 @@ async function initDB() {
       prefix TEXT PRIMARY KEY,
       last_used_at TEXT NOT NULL
     );
+    -- Computed cache of process-assign-addr's output (Kanban/Lineside rows,
+    -- PIC assignments, Hold/Remind lists), keyed one row per batch — tied to
+    -- that batch's Target R/O + Part Procurement + uploaded Address Master
+    -- inputs, not a source of truth in its own right. A JSON blob per batch
+    -- is enough here; no need for a fully relational schema for a cache.
+    CREATE TABLE IF NOT EXISTS handheld_results (
+      batch_id TEXT PRIMARY KEY,
+      final_data TEXT,
+      hold_data TEXT,
+      remind_data TEXT,
+      updated_at TEXT
+    );
   `);
   // ปรับ schema ของตารางเดิมให้มี group_prefix โดยไม่กระทบข้อมูลเดิม
   const uploadBatchesColumns = await db.all(`PRAGMA table_info(upload_batches)`);

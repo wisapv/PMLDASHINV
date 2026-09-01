@@ -8,6 +8,7 @@ const { buildMatchKey } = require('../lib/keyUtils');
 const { parseExcelDate } = require('../lib/dateUtils');
 const { getField } = require('../lib/fieldAliases');
 const { getStoredGroupPrefix } = require('../lib/groupPrefix');
+const { saveHandheldResults, saveFinalData, getHandheldResults } = require('../lib/handheldResults');
 const { emitEvent, EVENTS } = require('../lib/socketHub');
 const { blankOrTrim, toExcelCellValue } = require('../lib/textUtils');
 const router = express.Router();
@@ -325,6 +326,12 @@ async function handleProcessAssignAddr(req, res) {
             });
         });
 
+        // Persisted so a full page reload (or another user landing on this
+        // batch) can restore the fully-assigned Handheld view directly,
+        // instead of only the base preview — see handleGetFinalData below.
+        // Doesn't change the response shape returned to the caller.
+        await saveHandheldResults(db, batchId, { finalData, holdData, remindData });
+
         emitEvent(EVENTS.HANDHELD_UPDATED, { batchId });
         res.json({ success: true, data: finalData, hold: holdData, remind: remindData, duplicateKeys });
 
@@ -336,7 +343,55 @@ async function handleProcessAssignAddr(req, res) {
 
 router.post('/process-assign-addr', upload.single('file'), handleProcessAssignAddr);
 
+// Restores the persisted address-assigned result for a batch — what a full
+// page reload uses to skip straight back to the fully-assigned Handheld
+// view instead of the "please upload Address Master" prompt. A clear 404
+// (not an empty success) when process-assign-addr has never been run for
+// this batch, so the frontend can tell "nothing yet" apart from "empty".
+async function handleGetFinalData(req, res) {
+    try {
+        const { batchId } = req.query;
+        if (!batchId) return res.status(400).json({ error: 'Missing batchId' });
+
+        const db = await connectDB();
+        const results = await getHandheldResults(db, batchId);
+        if (!results) return res.status(404).json({ error: 'Not yet processed for this batch' });
+
+        res.json({ success: true, data: results.finalData, hold: results.holdData, remind: results.remindData, updatedAt: results.updatedAt });
+    } catch (error) {
+        console.error(error);
+        res.status(500).json({ error: 'Failed to load persisted handheld data' });
+    }
+}
+
+router.get('/final-data', handleGetFinalData);
+
+// Saves a manual PIC drag-and-drop reassignment — same save-an-edit pattern
+// as the Group Prefix work (groupPrefixHistoryRoute.js): a POST to the same
+// path the GET reads from, body carries the full updated value. Only
+// final_data changes here; Hold/Remind are untouched.
+async function handleSaveFinalData(req, res) {
+    try {
+        const { batchId, data } = req.body;
+        if (!batchId) return res.status(400).json({ error: 'Missing batchId' });
+        if (!Array.isArray(data)) return res.status(400).json({ error: 'data must be an array' });
+
+        const db = await connectDB();
+        const saved = await saveFinalData(db, batchId, data);
+        if (!saved) return res.status(404).json({ error: 'Not yet processed for this batch' });
+
+        res.json({ success: true });
+    } catch (error) {
+        console.error(error);
+        res.status(500).json({ error: 'Failed to save handheld data' });
+    }
+}
+
+router.post('/final-data', express.json({ limit: '50mb' }), handleSaveFinalData);
+
 module.exports = router;
 module.exports.evaluatePicAndShop = evaluatePicAndShop;
 module.exports.handleProcessAssignAddr = handleProcessAssignAddr;
+module.exports.handleGetFinalData = handleGetFinalData;
+module.exports.handleSaveFinalData = handleSaveFinalData;
 module.exports.generateExcelBuffer = generateExcelBuffer;
