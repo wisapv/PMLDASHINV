@@ -1,10 +1,11 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import {
   CheckCircle2, FileSpreadsheet, Database, Loader2, Download,
   X, CheckSquare, Square, Merge, History, Plus, Filter,
   ArrowRight, AlertTriangle, ChevronDown, Pencil, RefreshCw, Users, PackagePlus, Star
 } from 'lucide-react';
 import HandheldManager from './HandheldManager';
+import AssignHandheld from './AssignHandheld';
 import { useActiveBatch, SOCKET_EVENTS, API_BASE } from '../hooks/useActiveBatch';
 
 const DEFAULT_GROUP_PREFIX = 'SR481D';
@@ -112,11 +113,8 @@ const ListCreate = ({ activeTab, setUploadTab, setActiveModule }) => {
   // batch — without this, a second user landing on the shared active batch
   // (or the Handheld tab, which gates on previewData) would see nothing
   // even though a teammate already merged it. Also this is the mechanism
-  // that restores the preview step itself: ListCreate fully unmounts when
-  // navigating to Home (App.jsx renders it conditionally, not just hides
-  // it), which destroys `step` along with every other local state, so this
-  // effect (which runs again on every fresh mount, see the useEffect below)
-  // is what has to put the UI back where the user left it.
+  // that restores the preview step itself — see the mount-effect comment
+  // below for how it interacts with App.jsx's mount/unmount behavior.
   //
   // Gated on result.hasBeenMerged, NOT on result.data.length > 0 — the
   // latter is true as soon as valid Target R/O + Part Procurement rows
@@ -159,19 +157,17 @@ const ListCreate = ({ activeTab, setUploadTab, setActiveModule }) => {
   // deliberately browsing a past batch from History. On a genuine change
   // (not the initial load) reset the local view — this is what makes
   // "Start New Batch" (or another user starting one) take effect here.
-  // This also runs on every fresh mount of ListCreate — App.jsx renders
-  // this whole page conditionally on activeModule, so navigating to Home
-  // and back fully unmounts/remounts it, wiping local state including
-  // `step`. refreshPreviewDataSilently below is what puts the user back on
-  // the preview step (only when the server confirms a real Merge already
-  // happened for this batch) instead of forcing them through Merge again.
+  //
+  // NOTE: now that App.jsx keeps every module mounted and only toggles
+  // visibility via CSS (instead of conditionally rendering/unmounting on
+  // navigation), this effect no longer re-runs on every Home <-> Upload
+  // switch — it only fires on true mount and on real activeBatchId changes.
+  // refreshPreviewDataSilently is kept as-is (server-confirmed restore) since
+  // it's still useful for a second user/tab landing on an existing batch.
   useEffect(() => {
     // Temporary diagnostic for the "TBOS doesn't restore to preview after
     // Home -> Upload navigation" report — remove once that's confirmed fixed
-    // in real usage. Shows whether this effect even ran on the remount, and
-    // with what activeBatchId/hasLoadedActiveBatch — if the bug is real, one
-    // of these two lines is the place to look: either this effect fires
-    // with unexpected values, or it never fires again at all after Home.
+    // in real usage.
     console.log('[TBOS restore] mount effect fired', { activeBatchId, hasLoadedActiveBatch, isViewingHistoricalBatch });
     if (!hasLoadedActiveBatch || isViewingHistoricalBatch) return;
 
@@ -262,7 +258,7 @@ const ListCreate = ({ activeTab, setUploadTab, setActiveModule }) => {
     if (!window.confirm('This will start a new shared batch for everyone — continue?')) return;
     try {
       await startNewBatch();
-    } catch (err) {
+    } catch {
       alert('Failed to start a new batch.');
     }
   };
@@ -299,7 +295,7 @@ const ListCreate = ({ activeTab, setUploadTab, setActiveModule }) => {
       } else {
         setNewPrefixModalError(result.error || 'Failed to save prefix.');
       }
-    } catch (err) {
+    } catch {
       setNewPrefixModalError('Server error while saving prefix.');
     } finally {
       setIsSavingNewPrefix(false);
@@ -330,7 +326,7 @@ const ListCreate = ({ activeTab, setUploadTab, setActiveModule }) => {
       } else {
         alert("Failed to delete prefix from history.");
       }
-    } catch (err) { alert("Server error while deleting prefix from history."); }
+    } catch { alert("Server error while deleting prefix from history."); }
     finally {
       setIsDeletingPrefix(false);
       setDeletePrefixTarget(null);
@@ -343,7 +339,7 @@ const ListCreate = ({ activeTab, setUploadTab, setActiveModule }) => {
       const response = await fetch(`${API_BASE}/api/batches/${batchId}`, { method: 'DELETE' });
       if (response.ok) fetchHistory();
       else alert("Failed to delete batch.");
-    } catch (err) { alert("Failed to connect to server."); }
+    } catch { alert("Failed to connect to server."); }
   };
 
   const handleDownloadNewParts = () => {
@@ -360,7 +356,7 @@ const ListCreate = ({ activeTab, setUploadTab, setActiveModule }) => {
       });
       if (response.ok) fetchHistory();
       else alert("Failed to set baseline batch.");
-    } catch (err) { alert("Failed to connect to server."); }
+    } catch { alert("Failed to connect to server."); }
   };
 
   const handlePreviewHistory = (batchId) => {
@@ -395,7 +391,7 @@ const ListCreate = ({ activeTab, setUploadTab, setActiveModule }) => {
         fetchHistory();
       }
       else { alert("Upload Target R/O Failed!"); setStep('idle'); }
-    } catch (err) { alert("Server Error!"); setStep('idle'); }
+    } catch { alert("Server Error!"); setStep('idle'); }
     e.target.value = null;
   };
 
@@ -416,7 +412,7 @@ const ListCreate = ({ activeTab, setUploadTab, setActiveModule }) => {
         fetchHistory();
       }
       else { alert("Upload Part Procurement Failed!"); setStep('idle'); }
-    } catch (err) { alert("Server Error!"); setStep('idle'); }
+    } catch { alert("Server Error!"); setStep('idle'); }
     e.target.value = null;
   };
 
@@ -442,7 +438,7 @@ const ListCreate = ({ activeTab, setUploadTab, setActiveModule }) => {
         setGroupPrefixError(result.error);
         setStep('idle');
       } else { alert("Merge Failed!"); setStep('idle'); }
-    } catch (error) { alert("Server Error during merge!"); setStep('idle'); }
+    } catch { alert("Server Error during merge!"); setStep('idle'); }
   };
 
   const handleToggleFile = (id) => setDownloadFiles(prev => prev.map(f => f.id === id ? { ...f, isChecked: !f.isChecked } : f));
@@ -457,10 +453,29 @@ const ListCreate = ({ activeTab, setUploadTab, setActiveModule }) => {
     setIsModalOpen(false);
   };
 
-  const tableHeaders = previewData.length > 0 ? Object.keys(previewData[0]) : [];
-  const newPartsTableHeaders = newPartsData.length > 0 ? Object.keys(newPartsData[0]) : [];
-  const uniqueGroupsForDropdown = [...new Set(previewData.map(item => item['Group ID*']))].filter(Boolean);
-  const filteredPreviewData = selectedPreviewGroup === 'All' ? previewData : previewData.filter(item => item['Group ID*'] === selectedPreviewGroup);
+  // Memoized so these are only recomputed when previewData / newPartsData /
+  // selectedPreviewGroup actually change, instead of on every render of this
+  // component (which happens on nearly every interaction — typing in a
+  // modal, toggling a checkbox, a socket event, etc). Without this, every
+  // one of those re-renders re-iterates the full previewData array, which
+  // gets noticeably laggy once a merged batch has more than a few hundred
+  // rows.
+  const tableHeaders = useMemo(
+    () => (previewData.length > 0 ? Object.keys(previewData[0]) : []),
+    [previewData]
+  );
+  const newPartsTableHeaders = useMemo(
+    () => (newPartsData.length > 0 ? Object.keys(newPartsData[0]) : []),
+    [newPartsData]
+  );
+  const uniqueGroupsForDropdown = useMemo(
+    () => [...new Set(previewData.map(item => item['Group ID*']))].filter(Boolean),
+    [previewData]
+  );
+  const filteredPreviewData = useMemo(
+    () => (selectedPreviewGroup === 'All' ? previewData : previewData.filter(item => item['Group ID*'] === selectedPreviewGroup)),
+    [previewData, selectedPreviewGroup]
+  );
 
   return (
     <div className="flex flex-col gap-6 w-full animate-in fade-in duration-500 pb-10">
@@ -615,7 +630,7 @@ const ListCreate = ({ activeTab, setUploadTab, setActiveModule }) => {
                               </tr>
                             </thead>
                             <tbody className="divide-y divide-ink/5">
-                              {newPartsData.map((row, idx) => (
+                              {newPartsData.slice(0, 100).map((row, idx) => (
                                 <tr key={idx} className="hover:bg-[#FAFAF7]/50 transition-colors">
                                   {newPartsTableHeaders.map((header, hIdx) => (<td key={hIdx} className="px-4 py-3 font-medium text-ink border-r border-ink/5 last:border-0">{String(row[header] || '')}</td>))}
                                 </tr>
@@ -623,6 +638,9 @@ const ListCreate = ({ activeTab, setUploadTab, setActiveModule }) => {
                             </tbody>
                           </table>
                         </div>
+                        {newPartsData.length > 100 && (
+                          <p className="text-xs text-muted -mt-1">Showing first 100 of {newPartsData.length} — download for the full list.</p>
+                        )}
 
                         <button onClick={handleDownloadNewParts} className="self-start bg-lime-700 text-white px-6 py-2.5 rounded-xl font-bold hover:bg-lime-800 transition-colors flex items-center gap-2 shadow-md">
                           <Download size={16} /> Download New Parts
@@ -694,7 +712,7 @@ const ListCreate = ({ activeTab, setUploadTab, setActiveModule }) => {
                             </tr>
                           </thead>
                           <tbody className="divide-y divide-red-50">
-                            {tbosRemindData.map((r, i) => (
+                            {tbosRemindData.slice(0, 100).map((r, i) => (
                               <tr key={i} className="hover:bg-red-50/30 transition-colors">
                                 <td className="px-4 py-3 font-medium text-ink">{r['Dock IH']}</td>
                                 <td className="px-4 py-3 text-ink">{r.Supplier}</td>
@@ -705,6 +723,9 @@ const ListCreate = ({ activeTab, setUploadTab, setActiveModule }) => {
                           </tbody>
                         </table>
                       </div>
+                      {tbosRemindData.length > 100 && (
+                        <p className="text-xs text-red-400/80 mt-2">Showing first 100 of {tbosRemindData.length} items.</p>
+                      )}
                     </div>
                   )}
 
@@ -769,7 +790,7 @@ const ListCreate = ({ activeTab, setUploadTab, setActiveModule }) => {
           )}
       </div>
 
-      <div className={activeTab === 'TBOS' ? 'hidden' : ''}>
+      <div className={activeTab === 'Handheld' ? '' : 'hidden'}>
         <HandheldManager
           key={currentBatchId}
           currentBatchId={currentBatchId}
@@ -779,6 +800,10 @@ const ListCreate = ({ activeTab, setUploadTab, setActiveModule }) => {
           subscribeToEvent={subscribeToEvent}
           setActiveModule={setActiveModule}
         />
+      </div>
+
+      <div className={activeTab === 'Assign' ? '' : 'hidden'}>
+        <AssignHandheld currentBatchId={currentBatchId} setUploadTab={setUploadTab} />
       </div>
 
       {isModalOpen && (

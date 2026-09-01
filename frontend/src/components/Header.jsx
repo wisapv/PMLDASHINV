@@ -2,9 +2,10 @@ import React from 'react';
 import { Search, Bell, AlertCircle, ChevronDown } from 'lucide-react';
 import Sparkle from './Sparkle';
 
-const Header = ({ activeTab, setActiveTab, activeModule, uploadTab, setUploadTab }) => {
+const Header = ({ activeTab, setActiveTab, activeModule, uploadTab, setUploadTab, templateTab, setTemplateTab }) => {
   const dashboardTabs = ['Overview', 'Detail', 'Summary'];
-  const uploadTabs = ['TBOS', 'Handheld'];
+  const uploadTabs = ['TBOS', 'Handheld', 'Assign'];
+  const templateTabs = ['FORMAT', 'DEVICE'];
 
   return (
     <div className="fixed top-0 left-0 right-0 z-50 bg-canvas/90 backdrop-blur-md w-full flex justify-between items-center px-8 h-24 border-b border-ink/[0.06]">
@@ -56,6 +57,28 @@ const Header = ({ activeTab, setActiveTab, activeModule, uploadTab, setUploadTab
                 onClick={() => setUploadTab(tab)}
                 className={`relative z-10 w-[120px] flex-none text-center py-2.5 text-xs font-bold transition-colors duration-300 ${
                   uploadTab === tab ? 'text-white' : 'text-muted hover:text-ink'
+                }`}
+              >
+                {tab}
+              </button>
+            ))}
+          </div>
+
+        ) : activeModule === 'template' ? (
+
+          // โชว์ Tabs สำหรับ Template Management (FORMAT / DEVICE)
+          <div className="relative flex items-center bg-white rounded-full p-1.5 shadow-[0_2px_10px_rgba(20,20,15,0.05)] border border-ink/[0.05]">
+            <div
+              className="absolute top-1.5 bottom-1.5 left-1.5 w-[110px] bg-ink rounded-full transition-transform duration-300 ease-in-out"
+              style={{ transform: `translateX(${templateTabs.indexOf(templateTab) * 100}%)` }}
+            ></div>
+
+            {templateTabs.map((tab) => (
+              <button
+                key={tab}
+                onClick={() => setTemplateTab(tab)}
+                className={`relative z-10 w-[110px] flex-none text-center py-2.5 text-xs font-bold transition-colors duration-300 ${
+                  templateTab === tab ? 'text-white' : 'text-muted hover:text-ink'
                 }`}
               >
                 {tab}

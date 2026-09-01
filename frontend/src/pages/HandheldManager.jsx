@@ -26,7 +26,7 @@ const HandheldManager = ({ currentBatchId, previewData, isRestoringPreview, setU
       const result = await res.json();
       if (res.ok) { setHandheldPreview(result.data); setHasHandheldUpdate(false); setStep('idle'); }
       else { alert("Failed to generate Handheld format"); setStep('idle'); }
-    } catch(err) { alert("Server Error"); setStep('idle'); }
+    } catch { alert("Server Error"); setStep('idle'); }
   }, [currentBatchId]);
 
   // Restores the Base Preview (section 1) on mount — this is purely derived
@@ -130,7 +130,7 @@ const HandheldManager = ({ currentBatchId, previewData, isRestoringPreview, setU
             setHasHandheldUpdate(false);
             setStep('idle');
         } else { alert("Process Failed"); setStep('idle'); }
-    } catch (err) { alert("Upload Failed"); setStep('idle'); }
+    } catch { alert("Upload Failed"); setStep('idle'); }
     e.target.value = null;
   };
 
@@ -448,7 +448,7 @@ const HandheldManager = ({ currentBatchId, previewData, isRestoringPreview, setU
                         <table className="w-full text-left text-[10px] whitespace-nowrap">
                           <thead className="bg-red-50 sticky top-0"><tr className="text-red-500 uppercase"><th className="px-3 py-2">Dock</th><th className="px-3 py-2">Supplier</th><th className="px-3 py-2">Part No</th><th className="px-3 py-2">Source</th></tr></thead>
                           <tbody className="divide-y divide-red-50">
-                            {remindData.map((r, i) => (
+                            {remindData.slice(0, 100).map((r, i) => (
                               <tr key={i} className="hover:bg-red-50/30">
                                 <td className="px-3 py-2 font-medium">{r['Dock IH']}</td><td className="px-3 py-2">{r.Supplier}</td><td className="px-3 py-2">{r['Part No']}</td><td className="px-3 py-2">{r.Source}</td>
                               </tr>
@@ -456,6 +456,9 @@ const HandheldManager = ({ currentBatchId, previewData, isRestoringPreview, setU
                           </tbody>
                         </table>
                       </div>
+                      {remindData.length > 100 && (
+                        <p className="text-[10px] text-red-400/80 mt-2">Showing first 100 of {remindData.length}.</p>
+                      )}
                     </div>
                   )}
 
@@ -470,7 +473,7 @@ const HandheldManager = ({ currentBatchId, previewData, isRestoringPreview, setU
                         <table className="w-full text-left text-[10px] whitespace-nowrap">
                           <thead className="bg-orange-50 sticky top-0"><tr className="text-orange-500 uppercase"><th className="px-3 py-2">Dock</th><th className="px-3 py-2">Part No</th><th className="px-3 py-2">Part Name</th></tr></thead>
                           <tbody className="divide-y divide-orange-50">
-                            {holdData.map((r, i) => (
+                            {holdData.slice(0, 100).map((r, i) => (
                               <tr key={i} className="hover:bg-orange-50/30">
                                 <td className="px-3 py-2 font-medium">{r.Dock}</td><td className="px-3 py-2">{r['Part No']}</td><td className="px-3 py-2 truncate max-w-[150px]">{r['Part Name']}</td>
                               </tr>
@@ -478,6 +481,9 @@ const HandheldManager = ({ currentBatchId, previewData, isRestoringPreview, setU
                           </tbody>
                         </table>
                       </div>
+                      {holdData.length > 100 && (
+                        <p className="text-[10px] text-orange-500/80 mt-2">Showing first 100 of {holdData.length}.</p>
+                      )}
                       <div className="flex justify-end mt-4">
                         <button
                           onClick={() => setActiveModule && setActiveModule('send-part-list')}
