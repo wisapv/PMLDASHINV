@@ -22,6 +22,17 @@ async function getStoredGroupPrefix(db, batchId) {
   return (row && row.group_prefix) ? row.group_prefix : DEFAULT_GROUP_PREFIX;
 }
 
+// group_prefix is only ever written by a real Merge action (see
+// setStoredGroupPrefix's caller in mainFormatRoute.js), never by the passive
+// no-prefix preview-main path — so its presence is a genuine "has this batch
+// actually been merged at least once" signal, unlike "does preview-main
+// currently compute non-empty rows" (true as soon as valid Target R/O +
+// Part Procurement rows exist, even if Merge was never clicked).
+async function hasStoredGroupPrefix(db, batchId) {
+  const row = await db.get('SELECT group_prefix FROM upload_batches WHERE batch_id = ?', batchId);
+  return !!(row && row.group_prefix);
+}
+
 async function setStoredGroupPrefix(db, batchId, prefix) {
   await db.run(
     `INSERT INTO upload_batches (batch_id, group_prefix) VALUES (?, ?)
@@ -61,6 +72,7 @@ module.exports = {
   DEFAULT_GROUP_PREFIX,
   validateGroupPrefix,
   getStoredGroupPrefix,
+  hasStoredGroupPrefix,
   setStoredGroupPrefix,
   recordGroupPrefixUsage,
   listGroupPrefixHistory,

@@ -8,6 +8,7 @@ const { buildMatchKey } = require('../lib/keyUtils');
 const { parseExcelDate } = require('../lib/dateUtils');
 const { getField } = require('../lib/fieldAliases');
 const { getStoredGroupPrefix } = require('../lib/groupPrefix');
+const { saveHandheldResults, saveFinalData, getHandheldResults } = require('../lib/handheldResults');
 const { emitEvent, EVENTS } = require('../lib/socketHub');
 const { blankOrTrim, toExcelCellValue } = require('../lib/textUtils');
 const router = express.Router();
@@ -271,6 +272,15 @@ async function handleProcessAssignAddr(req, res) {
         // DESC); Pass 2 then lets every non-matching part look up siblings
         // resolved in Pass 1, regardless of which one happened to come first.
         const resolvedByName = new Map();
+        // Third fallback layer, keyed by the first 5 characters of Part
+        // Procurement's own PART # (e.g. '779160K05000' -> '77916') — parts
+        // that share a manufacturing series/prefix are commonly stored at the
+        // same address even when their full part numbers and PART DESC both
+        // differ. Populated ONLY from genuine Pass 1 direct addrMap matches
+        // below, never from Pass 2's name-fallback resolutions — otherwise a
+        // borrowed address could be borrowed again, one step further removed
+        // from anything Address Master actually said.
+        const resolvedByPartPrefix = new Map();
         const pendingFallback = [];
 
         baseDataList.forEach(item => {
@@ -279,7 +289,8 @@ async function handleProcessAssignAddr(req, res) {
             const ppPartNo = String(p['PART #'] || p['PART # '] || '').replace(/\s/g, '');
             const addrLookupKey = (ppDockValue + ppPartNo).replace(/-/g, '');
 
-            let addrInfoList = addrMap.get(addrLookupKey);
+            const directAddrMatch = addrMap.get(addrLookupKey);
+            let addrInfoList = directAddrMatch;
 
             if (!addrInfoList || addrInfoList.length === 0) {
                 const legacyPartNameKey = String(p['PART DESC'] || p['PART DESC '] || '').trim().toUpperCase();
@@ -290,7 +301,8 @@ async function handleProcessAssignAddr(req, res) {
             const source = String(t['Source'] || t['Source '] || '').trim();
             const ppSupplier = String(p['SUPL'] || p['SUPL '] || '').trim();
             const partDescKey = String(p['PART DESC'] || p['PART DESC '] || '').trim().toUpperCase();
-            const ctx = { ppDock, ppSupplier, groupPrefix, source, p, partDescKey };
+            const partPrefixKey = String(p['PART #'] || p['PART # '] || '').trim().slice(0, 5);
+            const ctx = { ppDock, ppSupplier, groupPrefix, source, p, partDescKey, partPrefixKey };
 
             if (addrInfoList.length > 0) {
                 finalData.push(...buildPartRows(addrInfoList, ctx));
@@ -299,13 +311,18 @@ async function handleProcessAssignAddr(req, res) {
                     if (!resolvedByName.has(partDescKey)) resolvedByName.set(partDescKey, []);
                     resolvedByName.get(partDescKey).push(...addrInfoList);
                 }
+
+                if (partPrefixKey && directAddrMatch && directAddrMatch.length > 0) {
+                    if (!resolvedByPartPrefix.has(partPrefixKey)) resolvedByPartPrefix.set(partPrefixKey, []);
+                    resolvedByPartPrefix.get(partPrefixKey).push(...directAddrMatch);
+                }
             } else {
                 pendingFallback.push(ctx);
             }
         });
 
         pendingFallback.forEach(ctx => {
-            const { ppDock, p, partDescKey } = ctx;
+            const { ppDock, p, partDescKey, partPrefixKey } = ctx;
             const entries = partDescKey ? (resolvedByName.get(partDescKey) || []) : [];
 
             if (entries.length > 0) {
@@ -313,9 +330,17 @@ async function handleProcessAssignAddr(req, res) {
                 return;
             }
 
-            // Still genuinely unresolved by both passes: goes to Hold exactly
-            // as before this task — no output row is added for it here
-            // (that's a separate, deferred piece of work, out of scope here).
+            const prefixEntries = partPrefixKey ? (resolvedByPartPrefix.get(partPrefixKey) || []) : [];
+
+            if (prefixEntries.length > 0) {
+                finalData.push(...buildPartRows(prefixEntries, ctx));
+                return;
+            }
+
+            // Still genuinely unresolved by all three passes: goes to Hold
+            // exactly as before this task — no output row is added for it
+            // here (that's a separate, deferred piece of work, out of scope
+            // here).
             holdData.push({
                 "Dock": ppDock,
                 "Supplier": blankOrTrim(p['SUPL'] || p['SUPL ']),
@@ -324,6 +349,12 @@ async function handleProcessAssignAddr(req, res) {
                 "Reason": "Missing in Address Master"
             });
         });
+
+        // Persisted so a full page reload (or another user landing on this
+        // batch) can restore the fully-assigned Handheld view directly,
+        // instead of only the base preview — see handleGetFinalData below.
+        // Doesn't change the response shape returned to the caller.
+        await saveHandheldResults(db, batchId, { finalData, holdData, remindData });
 
         emitEvent(EVENTS.HANDHELD_UPDATED, { batchId });
         res.json({ success: true, data: finalData, hold: holdData, remind: remindData, duplicateKeys });
@@ -336,7 +367,55 @@ async function handleProcessAssignAddr(req, res) {
 
 router.post('/process-assign-addr', upload.single('file'), handleProcessAssignAddr);
 
+// Restores the persisted address-assigned result for a batch — what a full
+// page reload uses to skip straight back to the fully-assigned Handheld
+// view instead of the "please upload Address Master" prompt. A clear 404
+// (not an empty success) when process-assign-addr has never been run for
+// this batch, so the frontend can tell "nothing yet" apart from "empty".
+async function handleGetFinalData(req, res) {
+    try {
+        const { batchId } = req.query;
+        if (!batchId) return res.status(400).json({ error: 'Missing batchId' });
+
+        const db = await connectDB();
+        const results = await getHandheldResults(db, batchId);
+        if (!results) return res.status(404).json({ error: 'Not yet processed for this batch' });
+
+        res.json({ success: true, data: results.finalData, hold: results.holdData, remind: results.remindData, updatedAt: results.updatedAt });
+    } catch (error) {
+        console.error(error);
+        res.status(500).json({ error: 'Failed to load persisted handheld data' });
+    }
+}
+
+router.get('/final-data', handleGetFinalData);
+
+// Saves a manual PIC drag-and-drop reassignment — same save-an-edit pattern
+// as the Group Prefix work (groupPrefixHistoryRoute.js): a POST to the same
+// path the GET reads from, body carries the full updated value. Only
+// final_data changes here; Hold/Remind are untouched.
+async function handleSaveFinalData(req, res) {
+    try {
+        const { batchId, data } = req.body;
+        if (!batchId) return res.status(400).json({ error: 'Missing batchId' });
+        if (!Array.isArray(data)) return res.status(400).json({ error: 'data must be an array' });
+
+        const db = await connectDB();
+        const saved = await saveFinalData(db, batchId, data);
+        if (!saved) return res.status(404).json({ error: 'Not yet processed for this batch' });
+
+        res.json({ success: true });
+    } catch (error) {
+        console.error(error);
+        res.status(500).json({ error: 'Failed to save handheld data' });
+    }
+}
+
+router.post('/final-data', express.json({ limit: '50mb' }), handleSaveFinalData);
+
 module.exports = router;
 module.exports.evaluatePicAndShop = evaluatePicAndShop;
 module.exports.handleProcessAssignAddr = handleProcessAssignAddr;
+module.exports.handleGetFinalData = handleGetFinalData;
+module.exports.handleSaveFinalData = handleSaveFinalData;
 module.exports.generateExcelBuffer = generateExcelBuffer;

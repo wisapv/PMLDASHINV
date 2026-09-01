@@ -1,11 +1,11 @@
 import React, { useState, useRef, useMemo, useEffect, useCallback } from 'react';
 import {
   Database, Loader2, CheckCircle2, MapPin,
-  AlertCircle, AlertTriangle, GripVertical, Settings2, Download, RefreshCw
+  AlertCircle, AlertTriangle, GripVertical, Settings2, Download, RefreshCw, Send
 } from 'lucide-react';
 import { SOCKET_EVENTS, API_BASE } from '../hooks/useActiveBatch';
 
-const HandheldManager = ({ currentBatchId, previewData, setUploadTab, subscribeToEvent }) => {
+const HandheldManager = ({ currentBatchId, previewData, setUploadTab, subscribeToEvent, setActiveModule }) => {
   const [step, setStep] = useState('idle');
   const [handheldPreview, setHandheldPreview] = useState(null);
   const [addrFileUploaded, setAddrFileUploaded] = useState(false);
@@ -29,14 +29,78 @@ const HandheldManager = ({ currentBatchId, previewData, setUploadTab, subscribeT
     } catch(err) { alert("Server Error"); setStep('idle'); }
   }, [currentBatchId]);
 
+  // Restores the Base Preview (section 1) on mount — this is purely derived
+  // from Target R/O + Part Procurement, both already persisted in the DB,
+  // so unlike the address-assigned result below it survives a full page
+  // reload, not just switching tabs within the app. No spinner/step change
+  // (unlike the button above) and silent=true so the backend doesn't
+  // broadcast HANDHELD_UPDATED back at this same client.
+  //
+  // What this deliberately does NOT restore: finalHandheldData / holdData /
+  // remindData (the address-assigned result from uploading Part addr.xls)
+  // and any manual PIC drag-and-drop reassignment — neither is persisted
+  // anywhere server-side (process-assign-addr never writes to the DB, and
+  // the PIC Manager's reassignments are local React state only, same as
+  // the base preview's own live-update handling above already documents).
+  // After a genuine reload those are honestly gone; Part addr.xls has to be
+  // re-uploaded. Persisting them is a larger, separate piece of work.
+  useEffect(() => {
+    if (!currentBatchId) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch(`${API_BASE}/api/handheld/preview-handheld?batchId=${currentBatchId}&silent=true`);
+        if (cancelled) return;
+        if (res.ok) {
+          const result = await res.json();
+          if (!cancelled) setHandheldPreview(result.data);
+        }
+        // A 404 (no raw data yet for this batch) is expected and left alone
+        // — handheldPreview stays null, showing the normal pre-generate state.
+      } catch (err) { console.error('Failed to restore handheld base preview', err); }
+    })();
+    return () => { cancelled = true; };
+  }, [currentBatchId]);
+
+  // Restores the address-assigned result (section 2: Kanban/Lineside rows,
+  // PIC assignments, Hold/Remind) on mount from handheld_results — this is
+  // now persisted server-side (process-assign-addr upserts it, and PIC
+  // drag-and-drop reassignments save back to it too, see handleDrop below),
+  // completing what the base-preview-only restore above used to leave as a
+  // reported limitation. A 404 means process-assign-addr has never been run
+  // for this batch — the normal "please upload Part addr.xls" prompt (Part
+  // addr.xls) is left alone in that case, unchanged.
+  useEffect(() => {
+    if (!currentBatchId) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch(`${API_BASE}/api/handheld-assign/final-data?batchId=${currentBatchId}`);
+        if (cancelled) return;
+        if (res.ok) {
+          const result = await res.json();
+          if (cancelled) return;
+          setFinalHandheldData(result.data);
+          setHoldData(result.hold);
+          setRemindData(result.remind);
+          setAddrFileUploaded(true);
+        }
+        // A 404 (process-assign-addr never run for this batch) is expected
+        // and left alone — the normal upload prompt stays in place.
+      } catch (err) { console.error('Failed to restore handheld final data', err); }
+    })();
+    return () => { cancelled = true; };
+  }, [currentBatchId]);
+
   // Same-batch live updates. The base preview (a plain GET) can be safely
   // auto-refreshed, but only while the PIC Manager is closed — reassignments
-  // made there are local-only (never sent to the backend, see handleDrop
-  // below), so overwriting state while it's open risks silently discarding
-  // work in progress. The address/PIC results (finalHandheldData) can't be
-  // silently refetched at all — producing them requires re-uploading the
-  // address file, there is no GET for "the last result" — so those cases
-  // just surface a non-blocking banner instead of an automatic overwrite.
+  // made there are now saved to the backend (see handleDrop below), but
+  // overwriting local state while the PIC Manager is open still risks
+  // clobbering a reassignment mid-drag, so this stays deliberately
+  // conservative there. The address/PIC results (finalHandheldData) can't be
+  // silently refetched from a live-update push — the base data may have
+  // changed too, and only re-uploading Address Master recomputes the match —
+  // so that case just surfaces a non-blocking banner instead.
   useEffect(() => {
     const unsubscribe = subscribeToEvent(SOCKET_EVENTS.HANDHELD_UPDATED, (payload) => {
       if (payload.batchId !== currentBatchId) return;
@@ -128,6 +192,19 @@ const HandheldManager = ({ currentBatchId, previewData, setUploadTab, subscribeT
     setDragOverPic(null);
   };
 
+  // Fire-and-forget, same as the base-preview restore's error handling —
+  // the local reassignment already applied optimistically, so a failed save
+  // here shouldn't interrupt the drag interaction with a blocking alert.
+  const saveFinalDataToServer = async (data) => {
+    try {
+      await fetch(`${API_BASE}/api/handheld-assign/final-data`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ batchId: currentBatchId, data }),
+      });
+    } catch (err) { console.error('Failed to persist PIC reassignment', err); }
+  };
+
   const handleDrop = (e, targetPic) => {
     e.preventDefault();
     setDragOverPic(null);
@@ -136,9 +213,13 @@ const HandheldManager = ({ currentBatchId, previewData, setUploadTab, subscribeT
 
     try {
       const { shortAddr, sourcePic } = JSON.parse(dataStr);
-      setFinalHandheldData(prev => prev.map(row =>
-        (row.ShortAddr === shortAddr && row.PIC === sourcePic) ? { ...row, PIC: targetPic } : row
-      ));
+      setFinalHandheldData(prev => {
+        const next = prev.map(row =>
+          (row.ShortAddr === shortAddr && row.PIC === sourcePic) ? { ...row, PIC: targetPic } : row
+        );
+        saveFinalDataToServer(next);
+        return next;
+      });
     } catch (err) { console.error(err); }
   };
 
@@ -381,6 +462,14 @@ const HandheldManager = ({ currentBatchId, previewData, setUploadTab, subscribeT
                             ))}
                           </tbody>
                         </table>
+                      </div>
+                      <div className="flex justify-end mt-4">
+                        <button
+                          onClick={() => setActiveModule && setActiveModule('send-part-list')}
+                          className="flex items-center gap-2 bg-orange-600 text-white px-5 py-2.5 rounded-xl font-bold text-xs hover:bg-orange-700 transition-colors shadow-sm"
+                        >
+                          <Send size={14} /> Send Part List
+                        </button>
                       </div>
                     </div>
                   )}

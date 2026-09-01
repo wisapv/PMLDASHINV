@@ -17,7 +17,7 @@ function validatePrefixInput(value) {
   return '';
 }
 
-const ListCreate = ({ activeTab, setUploadTab }) => {
+const ListCreate = ({ activeTab, setUploadTab, setActiveModule }) => {
   const { activeBatchId, hasLoadedActiveBatch, isSocketConnected, subscribeToEvent, startNewBatch } = useActiveBatch();
 
   const [subTab, setSubTab] = useState('new');
@@ -102,20 +102,32 @@ const ListCreate = ({ activeTab, setUploadTab }) => {
   // Populates previewData from whatever's already on the server for this
   // batch — without this, a second user landing on the shared active batch
   // (or the Handheld tab, which gates on previewData) would see nothing
-  // even though a teammate already merged it. Safe to call unconditionally:
-  // returns an empty result harmlessly if nothing's been merged yet, and
-  // only ever runs at batch-assignment boundaries, never mid-interaction.
+  // even though a teammate already merged it. Also this is the mechanism
+  // that restores the preview step itself: ListCreate fully unmounts when
+  // navigating to Home (App.jsx renders it conditionally, not just hides
+  // it), which destroys `step` along with every other local state, so this
+  // effect (which runs again on every fresh mount, see the useEffect below)
+  // is what has to put the UI back where the user left it.
+  //
+  // Gated on result.hasBeenMerged, NOT on result.data.length > 0 — the
+  // latter is true as soon as valid Target R/O + Part Procurement rows
+  // exist, even if Merge was never actually clicked (buildMainFormatRows
+  // computes straight from stored raw data, merge or no merge), so it can't
+  // tell "genuinely merged" apart from "just uploaded". hasBeenMerged
+  // reflects the batch's stored group_prefix, which the backend only ever
+  // writes on a real Merge action — see mainFormatRoute.js.
   const refreshPreviewDataSilently = useCallback(async (batchId) => {
     if (!batchId) return;
     try {
       const response = await fetch(`${API_BASE}/api/part-list/preview-main?batchId=${batchId}`);
       const result = await response.json();
-      if (response.ok && result.data && result.data.length > 0) {
-        setPreviewData(result.data);
+      if (response.ok && result.hasBeenMerged) {
+        setPreviewData(result.data || []);
         setTbosRemindData(result.remind || []);
         setNewPartsData(result.newParts || []);
-        const uniqueGroups = [...new Set(result.data.map((item) => item['Group ID*']))].filter(Boolean);
+        const uniqueGroups = [...new Set((result.data || []).map((item) => item['Group ID*']))].filter(Boolean);
         setDownloadFiles(uniqueGroups.map((grp, index) => ({ id: `grp_${index}`, label: `Group: ${grp}`, value: grp, isChecked: true })));
+        setStep('preview');
       }
     } catch (err) { console.error("Failed to refresh preview data", err); }
   }, []);
@@ -124,6 +136,12 @@ const ListCreate = ({ activeTab, setUploadTab }) => {
   // deliberately browsing a past batch from History. On a genuine change
   // (not the initial load) reset the local view — this is what makes
   // "Start New Batch" (or another user starting one) take effect here.
+  // This also runs on every fresh mount of ListCreate — App.jsx renders
+  // this whole page conditionally on activeModule, so navigating to Home
+  // and back fully unmounts/remounts it, wiping local state including
+  // `step`. refreshPreviewDataSilently below is what puts the user back on
+  // the preview step (only when the server confirms a real Merge already
+  // happened for this batch) instead of forcing them through Merge again.
   useEffect(() => {
     if (!hasLoadedActiveBatch || isViewingHistoricalBatch) return;
 
@@ -149,13 +167,14 @@ const ListCreate = ({ activeTab, setUploadTab }) => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeTab, currentBatchId]);
 
-  // Cross-session live updates for the shared active batch. Deliberately
-  // conservative: only refreshes read-only/background data — the history
-  // list, upload-status flags derived from it, and the underlying preview
-  // data (silently; it doesn't force step to 'preview' or touch the
-  // download-selection UI beyond repopulating it from fresh data). Never
-  // touches open modals, typed-but-unsubmitted prefix input, or which
-  // sub-tab/step is currently showing.
+  // Cross-session live updates for the shared active batch. Refreshes
+  // read-only/background data — the history list, upload-status flags
+  // derived from it, and the underlying preview data — and, via
+  // refreshPreviewDataSilently, jumps to the preview step once a real Merge
+  // actually happened (same server-confirmed hasBeenMerged check as the
+  // mount-time restore above), same as if the user had just clicked Merge
+  // themselves. Never touches open modals, typed-but-unsubmitted prefix
+  // input, or which sub-tab is currently showing.
   useEffect(() => {
     const unsubUpload = subscribeToEvent(SOCKET_EVENTS.BATCH_UPLOAD_UPDATED, (payload) => {
       if (payload.batchId !== currentBatchId) return;
@@ -726,6 +745,7 @@ const ListCreate = ({ activeTab, setUploadTab }) => {
           previewData={previewData}
           setUploadTab={setUploadTab}
           subscribeToEvent={subscribeToEvent}
+          setActiveModule={setActiveModule}
         />
       </div>
 
