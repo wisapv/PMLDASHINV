@@ -803,7 +803,7 @@ const ListCreate = ({ activeTab, setUploadTab, setActiveModule }) => {
       </div>
 
       <div className={activeTab === 'Assign' ? '' : 'hidden'}>
-        <AssignHandheld currentBatchId={currentBatchId} setUploadTab={setUploadTab} />
+        <AssignHandheld currentBatchId={currentBatchId} setUploadTab={setUploadTab} subscribeToEvent={subscribeToEvent} />
       </div>
 
       {isModalOpen && (

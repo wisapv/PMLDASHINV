@@ -1,25 +1,19 @@
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import Sparkle from "../components/Sparkle";
+import { API_BASE } from "../hooks/useActiveBatch";
 
-const initialGroups = [
-  { id: 1, code: "FN4", count: 46, device: null },
-  { id: 2, code: "SM", count: 11, device: null },
-  { id: 3, code: "S4", count: 9, device: null },
-  { id: 4, code: "TR2", count: 53, device: null },
-  { id: 5, code: "SQ", count: 40, device: null },
-  { id: 6, code: "A", count: 10, device: null },
-  { id: 7, code: "SAL", count: 9, device: null },
-  { id: 8, code: "SN", count: 4, device: null },
-  { id: 9, code: "FN5", count: 32, device: null },
-  { id: 10, code: "TR3", count: 37, device: null },
-  { id: 11, code: "WH1", count: 26, device: null },
-  { id: 12, code: "WH2", count: 18, device: null },
-];
+// Devices are now loaded from the real registry (see deviceList state below)
+// instead of being hardcoded here.
 
-const devices = ["HH-01", "HH-02", "HH-04"];
+const AssignHandheld = ({ currentBatchId, setUploadTab, subscribeToEvent }) => {
+  // Real, per-part data for this batch — the same "Address + PIC matched"
+  // result HandheldManager builds in step 2 (upload Part addr.xls), fetched
+  // straight from the backend instead of a hardcoded mock. Each row has
+  // Shop / Dock / Supplier / 'Part no.' / 'Part name' / Addr / ShortAddr / PIC.
+  const [finalHandheldData, setFinalHandheldData] = useState(null);
+  const [dataStatus, setDataStatus] = useState("loading"); // 'loading' | 'ready' | 'empty' | 'error'
+  const [selectedPic, setSelectedPic] = useState("All");
 
-const AssignHandheld = () => {
-  const [groups, setGroups] = useState(initialGroups);
   const [search, setSearch] = useState("");
   const [selectedIds, setSelectedIds] = useState([]);
   const [targetDevice, setTargetDevice] = useState("");
@@ -29,6 +23,104 @@ const AssignHandheld = () => {
   const [showSendConfirm, setShowSendConfirm] = useState(false);
   const [showSendSuccess, setShowSendSuccess] = useState(false);
   const [isSending, setIsSending] = useState(false);
+
+  // Device assignment is kept separate from the computed groups below
+  // (keyed by group id "<PIC>::<ShortAddr>"), so switching the PIC filter
+  // or a live-update refetch never wipes out assignments already made.
+  const [assignments, setAssignments] = useState({});
+
+  // Real handheld registry (managed on the "Handheld Devices" page) —
+  // only active devices show up here as assignment targets, same as an
+  // inactive device disappearing from that page's picker.
+  const [deviceList, setDeviceList] = useState([]);
+  const loadDevices = () => {
+    fetch(`${API_BASE}/api/handheld-devices`)
+      .then((res) => (res.ok ? res.json() : null))
+      .then((result) => setDeviceList(result ? result.data : []))
+      .catch((err) => console.error('Failed to load handheld devices', err));
+  };
+  // Loads once on mount — but this component is kept mounted (hidden via
+  // CSS, not unmounted) when the user switches away from this tab, so a
+  // device added/activated on the "Handheld Devices" page afterwards would
+  // never show up here without the live-update subscription below.
+  useEffect(() => { loadDevices(); }, []);
+  useEffect(() => {
+    if (!subscribeToEvent) return undefined;
+    return subscribeToEvent("handheld:devicesUpdated", loadDevices);
+  }, [subscribeToEvent]);
+  const devices = useMemo(
+    () => deviceList.filter((d) => d.status === 'active').map((d) => d.name),
+    [deviceList]
+  );
+
+  const loadFinalData = () => {
+    if (!currentBatchId) { setDataStatus("empty"); setFinalHandheldData(null); return; }
+    setDataStatus((prev) => (prev === "ready" ? prev : "loading"));
+    fetch(`${API_BASE}/api/handheld-assign/final-data?batchId=${currentBatchId}`)
+      .then((res) => (res.ok ? res.json() : null))
+      .then((result) => {
+        const rows = result && result.data ? result.data : [];
+        setFinalHandheldData(rows);
+        setDataStatus(rows.length > 0 ? "ready" : "empty");
+      })
+      .catch((err) => {
+        console.error("Failed to load handheld assign data", err);
+        setFinalHandheldData(null);
+        setDataStatus("error");
+      });
+  };
+
+  // Loads once per batch. A 404 / no data simply means step 2 (upload
+  // "Part addr.xls" on the Handheld tab, matching Address + PIC) hasn't
+  // been run yet for this batch — that's a normal state, not an error.
+  useEffect(() => { loadFinalData(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [currentBatchId]);
+
+  // Same-batch live updates (e.g. someone (re)uploads Part addr.xls or
+  // reassigns a PIC on the Handheld tab while this tab is open) — refetch
+  // so the groups here never go stale.
+  useEffect(() => {
+    if (!subscribeToEvent) return undefined;
+    const unsubscribe = subscribeToEvent("handheld:updated", (payload) => {
+      if (payload.batchId !== currentBatchId) return;
+      loadFinalData();
+    });
+    return unsubscribe;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [subscribeToEvent, currentBatchId]);
+
+  // Every PIC present in the real data, for the filter dropdown.
+  const picOptions = useMemo(() => {
+    if (!finalHandheldData) return [];
+    return [...new Set(finalHandheldData.map((r) => r.PIC || "Unassigned"))].sort();
+  }, [finalHandheldData]);
+
+  // The real groups to distribute to devices: rows grouped by short address
+  // (ShortAddr), scoped to the selected PIC — or across every PIC when
+  // "All" is selected. In "All" view the group id carries the PIC too, so
+  // two different PICs that happen to share a short-address code don't
+  // collide into one card.
+  const baseGroups = useMemo(() => {
+    if (!finalHandheldData) return [];
+    const scoped = selectedPic === "All"
+      ? finalHandheldData
+      : finalHandheldData.filter((r) => (r.PIC || "Unassigned") === selectedPic);
+
+    const byKey = new Map();
+    scoped.forEach((row) => {
+      const pic = row.PIC || "Unassigned";
+      const shortAddr = row.ShortAddr || "Unk";
+      const key = `${pic}::${shortAddr}`;
+      if (!byKey.has(key)) byKey.set(key, { id: key, code: shortAddr, pic, count: 0 });
+      byKey.get(key).count += 1;
+    });
+    return Array.from(byKey.values()).sort((a, b) => a.code.localeCompare(b.code));
+  }, [finalHandheldData, selectedPic]);
+
+  // Merge in device assignments kept in `assignments` (see above).
+  const groups = useMemo(
+    () => baseGroups.map((g) => ({ ...g, device: assignments[g.id] || null })),
+    [baseGroups, assignments]
+  );
 
   const totalAddresses = useMemo(() => groups.reduce((sum, g) => sum + g.count, 0), [groups]);
 
@@ -70,7 +162,11 @@ const AssignHandheld = () => {
     const target = targetDevice;
     const count = selectedIds.length;
 
-    setGroups((prev) => prev.map((g) => selectedIds.includes(g.id) ? { ...g, device: target } : g));
+    setAssignments((prev) => {
+      const next = { ...prev };
+      selectedIds.forEach((id) => { next[id] = target; });
+      return next;
+    });
     setSelectedIds([]);
     setTargetDevice("");
     showToast(`${count} group${count > 1 ? "s" : ""} assigned to ${target}`);
@@ -78,7 +174,11 @@ const AssignHandheld = () => {
 
   const removeFromDevice = (id) => {
     const group = groups.find((g) => g.id === id);
-    setGroups((prev) => prev.map((g) => g.id === id ? { ...g, device: null } : g));
+    setAssignments((prev) => {
+      const next = { ...prev };
+      delete next[id];
+      return next;
+    });
     setSelectedIds((prev) => prev.filter((x) => x !== id));
 
     if (group) showToast(`${group.code} returned to Unassigned`);
@@ -108,7 +208,9 @@ const AssignHandheld = () => {
   const handleDrop = (event, targetDeviceName) => {
     event.preventDefault();
 
-    const transferredId = Number(event.dataTransfer.getData("text/plain"));
+    // Group ids are now strings ("<PIC>::<ShortAddr>"), not numbers — no
+    // Number() cast here anymore.
+    const transferredId = event.dataTransfer.getData("text/plain");
     const groupId = transferredId || draggedGroupId;
     if (!groupId) return;
 
@@ -120,7 +222,12 @@ const AssignHandheld = () => {
       return;
     }
 
-    setGroups((prev) => prev.map((g) => g.id === groupId ? { ...g, device: targetDeviceName } : g));
+    setAssignments((prev) => {
+      const next = { ...prev };
+      if (targetDeviceName) next[groupId] = targetDeviceName;
+      else delete next[groupId];
+      return next;
+    });
     setSelectedIds((prev) => prev.filter((id) => id !== groupId));
 
     if (targetDeviceName) showToast(`${group.code} moved to ${targetDeviceName}`);
@@ -144,12 +251,44 @@ const AssignHandheld = () => {
     setShowSendConfirm(false);
     setIsSending(true);
 
-    // TODO: ภายหลังเปลี่ยนตรงนี้เป็นการส่งข้อมูลจริงผ่าน Firebase / API
+    // TODO (Step 2): send the real assignment (assignments + groups) to
+    // each device via a real API instead of this fake delay.
     setTimeout(() => {
       setIsSending(false);
       setShowSendSuccess(true);
     }, 900);
   };
+
+  if (dataStatus === "loading") {
+    return (
+      <div className="w-full pb-10 flex flex-col items-center justify-center py-24 text-center animate-in fade-in">
+        <div className="w-9 h-9 rounded-full border-[3px] border-ink/10 border-t-accent animate-spin mb-4" />
+        <p className="text-[12px] font-bold text-muted">Loading address groups for this batch…</p>
+      </div>
+    );
+  }
+
+  if (dataStatus === "empty" || dataStatus === "error") {
+    return (
+      <div className="w-full pb-10 animate-in fade-in">
+        <div className="bg-white border-2 border-dashed border-ink/10 rounded-[28px] p-16 flex flex-col items-center justify-center text-center">
+          <div className="w-14 h-14 rounded-2xl bg-accent/20 flex items-center justify-center text-ink text-xl font-black mb-4">▤</div>
+          <h3 className="font-display text-xl font-bold text-ink mb-2">No PIC / Address data yet</h3>
+          <p className="text-[12px] text-muted font-semibold max-w-sm mb-6">
+            {dataStatus === "error"
+              ? "Couldn't load data for this batch. Try again, or check the Handheld tab."
+              : "Go to the Handheld tab and upload Part addr.xls to match Address + PIC first — Assign Handheld distributes that result to devices."}
+          </p>
+          <button
+            onClick={() => setUploadTab && setUploadTab("Handheld")}
+            className="bg-ink text-accent px-6 py-3 rounded-xl font-bold text-[11.5px] hover:opacity-90 transition-colors"
+          >
+            Go to Handheld tab
+          </button>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="w-full pb-10 animate-in fade-in duration-500">
@@ -232,9 +371,19 @@ const AssignHandheld = () => {
         >
           <div className="p-5 border-b border-ink/[0.06]">
 
-            <div className="flex items-start justify-between mb-4">
+            <div className="flex items-start justify-between mb-4 gap-2">
               <h3 className="text-[17px] font-bold text-ink">Unassigned</h3>
-              <div className="w-9 h-9 rounded-xl bg-accent/20 flex items-center justify-center text-ink">▤</div>
+              <div className="flex flex-col items-end gap-1">
+                <p className="text-[8px] font-extrabold tracking-wide text-muted">PIC</p>
+                <select
+                  value={selectedPic}
+                  onChange={(e) => setSelectedPic(e.target.value)}
+                  className="bg-white border border-ink/10 rounded-xl px-2.5 py-1.5 text-[10px] font-bold text-ink outline-none shadow-sm cursor-pointer max-w-[130px]"
+                >
+                  <option value="All">All PICs</option>
+                  {picOptions.map((pic) => <option key={pic} value={pic}>{pic}</option>)}
+                </select>
+              </div>
             </div>
 
             {/* SELECT DEVICE */}
@@ -328,7 +477,10 @@ const AssignHandheld = () => {
                   />
 
                   <span className="text-[#C0BDB4] text-[12px] tracking-[-2px]">⠿</span>
-                  <div className="flex-1 min-w-0"><p className="text-[12px] font-extrabold text-ink">{group.code}</p></div>
+                  <div className="flex-1 min-w-0">
+                    <p className="text-[12px] font-extrabold text-ink">{group.code}</p>
+                    {selectedPic === "All" && <p className="text-[9px] text-muted font-semibold truncate">{group.pic}</p>}
+                  </div>
 
                   <span className="bg-ink text-white min-w-[32px] h-[24px] px-2 rounded-full flex items-center justify-center text-[9.5px] font-extrabold">
                     {group.count}
@@ -349,6 +501,15 @@ const AssignHandheld = () => {
 
         {/* DEVICES */}
         <div className="grid grid-cols-1 md:grid-cols-2 2xl:grid-cols-3 gap-4">
+
+          {devices.length === 0 && (
+            <div className="md:col-span-2 2xl:col-span-3 bg-white rounded-[28px] border-2 border-dashed border-ink/10 p-12 flex flex-col items-center justify-center text-center">
+              <p className="text-[13px] font-bold text-ink mb-1">No active handheld devices</p>
+              <p className="text-[11px] text-muted font-semibold max-w-xs">
+                Go to Template &gt; Handheld Devices to add or activate a device before assigning address groups.
+              </p>
+            </div>
+          )}
 
           {devices.map((device) => {
             const stats = deviceStats(device);
@@ -412,7 +573,9 @@ const AssignHandheld = () => {
 
                               <div className="flex-1 min-w-0">
                                 <p className="text-[12px] font-extrabold text-ink">{group.code}</p>
-                                <p className="text-[9.5px] text-muted font-semibold mt-0.5">{group.count} addresses</p>
+                                <p className="text-[9.5px] text-muted font-semibold mt-0.5">
+                                  {group.count} addresses{selectedPic === "All" ? ` · ${group.pic}` : ""}
+                                </p>
                               </div>
 
                               <span className="bg-ink text-white min-w-[31px] h-[24px] px-2 rounded-full flex items-center justify-center text-[9px] font-extrabold">

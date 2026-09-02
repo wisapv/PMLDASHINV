@@ -11,6 +11,7 @@ export const SOCKET_EVENTS = {
   BATCH_UPLOAD_UPDATED: 'batch:uploadUpdated',
   BATCH_MERGE_UPDATED: 'batch:mergeUpdated',
   HANDHELD_UPDATED: 'handheld:updated',
+  HANDHELD_DEVICES_UPDATED: 'handheld:devicesUpdated',
 };
 
 // Shared by ListCreate.jsx (which owns the connection) and HandheldManager.jsx

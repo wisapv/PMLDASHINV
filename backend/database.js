@@ -58,6 +58,17 @@ async function initDB() {
       remind_data TEXT,
       updated_at TEXT
     );
+    -- Registry of physical handheld scanners (HH-01, HH-02, ...). Not tied
+    -- to any batch — a device exists independently of which batch's address
+    -- groups are currently assigned to it. status is 'active' | 'inactive';
+    -- inactive devices are hidden from AssignHandheld's device picker but
+    -- kept here (not deleted) so history/audit isn't lost by a toggle.
+    CREATE TABLE IF NOT EXISTS handheld_devices (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'active',
+      created_at TEXT DEFAULT CURRENT_TIMESTAMP
+    );
   `);
   // ปรับ schema ของตารางเดิมให้มี group_prefix โดยไม่กระทบข้อมูลเดิม
   const uploadBatchesColumns = await db.all(`PRAGMA table_info(upload_batches)`);

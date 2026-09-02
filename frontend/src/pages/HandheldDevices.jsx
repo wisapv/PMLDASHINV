@@ -1,5 +1,6 @@
-import React, { useState } from 'react';
-import { Plus, X, Power, Trash2, Smartphone, Pencil } from 'lucide-react';
+import React, { useEffect, useState } from 'react';
+import { Plus, X, Power, Trash2, Smartphone, Pencil, Loader2 } from 'lucide-react';
+import { API_BASE } from '../hooks/useActiveBatch';
 
 // Real device photo, imported from src/assets (the project's existing
 // assets folder) so Vite bundles and hashes it like every other imported
@@ -13,31 +14,32 @@ const STATUS_STYLES = {
   inactive: { label: 'Inactive', dot: 'bg-gray-300' },
 };
 
-// Seed data so the page has something to look at while this is still
-// frontend-only — no handheld_devices table/API exists yet. Swap this
-// useState initializer for a real fetch once the backend registry endpoint
-// exists; nothing else in this component should need to change shape-wise,
-// since it already treats devices as { id, name, status }.
-const SEED_DEVICES = [
-  { id: 'HH-01', name: 'HH-01', status: 'active' },
-  { id: 'HH-02', name: 'HH-02', status: 'active' },
-  { id: 'HH-03', name: 'HH-03', status: 'inactive' },
-  { id: 'HH-04', name: 'HH-04', status: 'active' },
-];
-
-function validateDeviceName(value, existingNames) {
+function validateDeviceNameLocal(value) {
   const trimmed = value.trim();
   if (!trimmed) return 'Device name cannot be empty.';
-  if (existingNames.includes(trimmed.toUpperCase())) return 'A device with this name already exists.';
   return '';
 }
 
+// Reads the server's { error } message when a request fails, falling back
+// to a generic message if the response isn't JSON (e.g. a network error).
+async function extractErrorMessage(res, fallback) {
+  try {
+    const body = await res.json();
+    return body.error || fallback;
+  } catch {
+    return fallback;
+  }
+}
+
 const HandheldDevices = () => {
-  const [devices, setDevices] = useState(SEED_DEVICES);
+  const [devices, setDevices] = useState([]);
+  const [isLoading, setIsLoading] = useState(true);
+  const [loadError, setLoadError] = useState('');
 
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
   const [newDeviceName, setNewDeviceName] = useState('');
   const [addModalError, setAddModalError] = useState('');
+  const [isSavingAdd, setIsSavingAdd] = useState(false);
 
   // Editing an existing device — one modal handles rename + activate/
   // deactivate + delete, opened by clicking the device's card.
@@ -45,6 +47,19 @@ const HandheldDevices = () => {
   const [editNameValue, setEditNameValue] = useState('');
   const [editError, setEditError] = useState('');
   const [confirmingDelete, setConfirmingDelete] = useState(false);
+  const [isSavingEdit, setIsSavingEdit] = useState(false);
+
+  const loadDevices = () => {
+    setIsLoading(true);
+    setLoadError('');
+    fetch(`${API_BASE}/api/handheld-devices`)
+      .then((res) => (res.ok ? res.json() : Promise.reject(new Error('Failed to load'))))
+      .then((result) => setDevices(result.data || []))
+      .catch(() => setLoadError('Could not load devices from the server.'))
+      .finally(() => setIsLoading(false));
+  };
+
+  useEffect(() => { loadDevices(); }, []);
 
   const openAddModal = () => {
     setNewDeviceName('');
@@ -52,14 +67,29 @@ const HandheldDevices = () => {
     setIsAddModalOpen(true);
   };
 
-  const handleConfirmAddDevice = () => {
-    const existingNames = devices.map((d) => d.name.toUpperCase());
-    const error = validateDeviceName(newDeviceName, existingNames);
-    if (error) { setAddModalError(error); return; }
+  const handleConfirmAddDevice = async () => {
+    const localError = validateDeviceNameLocal(newDeviceName);
+    if (localError) { setAddModalError(localError); return; }
 
-    const name = newDeviceName.trim();
-    setDevices((prev) => [...prev, { id: name.toUpperCase(), name, status: 'active' }]);
-    setIsAddModalOpen(false);
+    setIsSavingAdd(true);
+    try {
+      const res = await fetch(`${API_BASE}/api/handheld-devices`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: newDeviceName.trim() }),
+      });
+      if (!res.ok) {
+        setAddModalError(await extractErrorMessage(res, 'Failed to add device.'));
+        return;
+      }
+      const result = await res.json();
+      setDevices((prev) => [...prev, result.data]);
+      setIsAddModalOpen(false);
+    } catch {
+      setAddModalError('Could not reach the server.');
+    } finally {
+      setIsSavingAdd(false);
+    }
   };
 
   const openEditModal = (device) => {
@@ -74,27 +104,58 @@ const HandheldDevices = () => {
     setConfirmingDelete(false);
   };
 
-  const handleSaveEdit = () => {
-    const existingNames = devices.filter((d) => d.id !== editTarget.id).map((d) => d.name.toUpperCase());
-    const error = validateDeviceName(editNameValue, existingNames);
-    if (error) { setEditError(error); return; }
+  const handleSaveEdit = async () => {
+    const localError = validateDeviceNameLocal(editNameValue);
+    if (localError) { setEditError(localError); return; }
 
-    const name = editNameValue.trim();
-    setDevices((prev) => prev.map((d) => (d.id === editTarget.id ? { ...d, name } : d)));
-    setEditTarget((prev) => ({ ...prev, name }));
-    setEditError('');
+    setIsSavingEdit(true);
+    try {
+      const res = await fetch(`${API_BASE}/api/handheld-devices/${editTarget.id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: editNameValue.trim() }),
+      });
+      if (!res.ok) {
+        setEditError(await extractErrorMessage(res, 'Failed to rename device.'));
+        return;
+      }
+      const result = await res.json();
+      setDevices((prev) => prev.map((d) => (d.id === editTarget.id ? result.data : d)));
+      setEditTarget(result.data);
+      setEditError('');
+    } catch {
+      setEditError('Could not reach the server.');
+    } finally {
+      setIsSavingEdit(false);
+    }
   };
 
-  const handleToggleStatus = () => {
-    setDevices((prev) => prev.map((d) => (
-      d.id === editTarget.id ? { ...d, status: d.status === 'active' ? 'inactive' : 'active' } : d
-    )));
-    setEditTarget((prev) => ({ ...prev, status: prev.status === 'active' ? 'inactive' : 'active' }));
+  const handleToggleStatus = async () => {
+    const nextStatus = editTarget.status === 'active' ? 'inactive' : 'active';
+    try {
+      const res = await fetch(`${API_BASE}/api/handheld-devices/${editTarget.id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status: nextStatus }),
+      });
+      if (!res.ok) { setEditError(await extractErrorMessage(res, 'Failed to update status.')); return; }
+      const result = await res.json();
+      setDevices((prev) => prev.map((d) => (d.id === editTarget.id ? result.data : d)));
+      setEditTarget(result.data);
+    } catch {
+      setEditError('Could not reach the server.');
+    }
   };
 
-  const handleConfirmDelete = () => {
-    setDevices((prev) => prev.filter((d) => d.id !== editTarget.id));
-    closeEditModal();
+  const handleConfirmDelete = async () => {
+    try {
+      const res = await fetch(`${API_BASE}/api/handheld-devices/${editTarget.id}`, { method: 'DELETE' });
+      if (!res.ok) { setEditError(await extractErrorMessage(res, 'Failed to remove device.')); return; }
+      setDevices((prev) => prev.filter((d) => d.id !== editTarget.id));
+      closeEditModal();
+    } catch {
+      setEditError('Could not reach the server.');
+    }
   };
 
   const activeCount = devices.filter((d) => d.status === 'active').length;
@@ -119,7 +180,19 @@ const HandheldDevices = () => {
         </button>
       </div>
 
-      {devices.length === 0 ? (
+      {isLoading ? (
+        <div className="bg-white border border-gray-100 rounded-[32px] p-16 flex flex-col items-center justify-center text-center gap-3 shadow-sm">
+          <Loader2 size={28} className="animate-spin text-gray-400" />
+          <p className="text-sm text-gray-500">Loading devices…</p>
+        </div>
+      ) : loadError ? (
+        <div className="bg-white border border-red-100 rounded-[32px] p-16 flex flex-col items-center justify-center text-center gap-4 shadow-sm">
+          <p className="text-sm text-red-500 font-semibold">{loadError}</p>
+          <button onClick={loadDevices} className="bg-dark text-white px-6 py-2.5 rounded-xl font-bold hover:bg-primary transition-colors">
+            Try again
+          </button>
+        </div>
+      ) : devices.length === 0 ? (
         <div className="bg-white border border-gray-100 rounded-[32px] p-16 flex flex-col items-center justify-center text-center gap-4 shadow-sm">
           <div className="w-14 h-14 bg-orange-50 text-primary rounded-xl flex items-center justify-center">
             <Smartphone size={26} />
@@ -191,8 +264,13 @@ const HandheldDevices = () => {
 
             <div className="flex justify-end gap-3 mt-6">
               <button onClick={() => setIsAddModalOpen(false)} className="px-6 py-2.5 rounded-xl font-bold text-gray-500 hover:bg-gray-100 transition-colors">Cancel</button>
-              <button onClick={handleConfirmAddDevice} className="bg-dark text-white px-6 py-2.5 rounded-xl font-bold hover:bg-primary transition-colors shadow-md">
-                Add Device
+              <button
+                onClick={handleConfirmAddDevice}
+                disabled={isSavingAdd}
+                className="bg-dark text-white px-6 py-2.5 rounded-xl font-bold hover:bg-primary transition-colors shadow-md disabled:opacity-60 flex items-center gap-2"
+              >
+                {isSavingAdd && <Loader2 size={14} className="animate-spin" />}
+                {isSavingAdd ? 'Adding…' : 'Add Device'}
               </button>
             </div>
           </div>
@@ -221,10 +299,11 @@ const HandheldDevices = () => {
                   />
                   <button
                     onClick={handleSaveEdit}
+                    disabled={isSavingEdit}
                     title="Save name"
-                    className="flex items-center justify-center bg-gray-100 hover:bg-gray-200 text-dark p-2.5 rounded-xl transition-colors"
+                    className="flex items-center justify-center bg-gray-100 hover:bg-gray-200 text-dark p-2.5 rounded-xl transition-colors disabled:opacity-60"
                   >
-                    <Pencil size={16} />
+                    {isSavingEdit ? <Loader2 size={16} className="animate-spin" /> : <Pencil size={16} />}
                   </button>
                 </div>
                 {editError && <p className="text-xs font-semibold text-red-500 mb-3">{editError}</p>}
