@@ -295,6 +295,67 @@ async function handleSubmitFreeZone(req, res) {
   }
 }
 
+// The whole zone flat — every part across every address, no per-address
+// grouping (replaces the old Select Address → Address Detail two-step).
+// Each row carries `counted` + whatever was previously submitted for it,
+// so a re-scan of an already-counted item can open Input Stock pre-filled
+// for correction instead of a blank form.
+async function handleGetJobZoneParts(req, res) {
+  try {
+    const { batchId, deviceId, pic, shortAddr } = req.query;
+    if (!batchId || !deviceId || !pic || !shortAddr) {
+      return res.status(400).json({ error: 'Missing batchId, deviceId, pic, or shortAddr' });
+    }
+
+    const db = await connectDB();
+    const owned = await db.get(
+      'SELECT 1 FROM handheld_assignments WHERE batch_id = ? AND device_id = ? AND pic = ? AND short_addr = ?',
+      [batchId, deviceId, pic, shortAddr]
+    );
+    if (!owned) return res.status(403).json({ error: 'This zone is not assigned to this device' });
+
+    const results = await getHandheldResults(db, batchId);
+    const finalData = results ? results.finalData : [];
+
+    const countedRows = await db.all(
+      'SELECT addr, kbn, qty, box, pcs, seq, not_found FROM handheld_stock_counts WHERE batch_id = ? AND pic = ? AND short_addr = ?',
+      [batchId, pic, shortAddr]
+    );
+    const countedMap = new Map(countedRows.map((r) => [`${r.addr}::${r.kbn}`, r]));
+
+    const rows = finalData
+      .filter((row) => (row.PIC || 'Unassigned') === pic)
+      .filter((row) => (row.ShortAddr || 'Unk') === shortAddr)
+      .map((row) => {
+        const addr = row.Addr || row.ShortAddr || 'Unk';
+        const kbn = row.kbn || row['Part no.'] || '';
+        const counted = countedMap.get(`${addr}::${kbn}`);
+        return {
+          supplier: row.Supplier || '',
+          shop: row.Shop || '',
+          dock: row.Dock || '',
+          sPlant: row['S.plant'] || '',
+          sDock: row['S.dock'] || '',
+          kbn,
+          address: addr,
+          partName: row['Part name'] || '',
+          partNo: row['Part no.'] || '',
+          qty: row["Q'ty"] || '',
+          counted: !!counted,
+          countedQty: counted ? counted.qty : null,
+          countedBox: counted ? counted.box : null,
+          countedPcs: counted ? counted.pcs : null,
+          countedSeq: counted ? counted.seq : null,
+          countedNotFound: counted ? !!counted.not_found : false,
+        };
+      });
+
+    res.json({ data: rows });
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to load zone parts' });
+  }
+}
+
 // Audit log — "who held this device, when." Fire-and-forget from the
 // Android app right after a successful check-in; failure here should
 // never block the operator from getting to Home.
@@ -323,6 +384,7 @@ router.post('/device-assignments', express.json({ limit: '5mb' }), handleSaveAss
 router.get('/my-jobs', handleGetMyJobs);
 router.get('/job-addresses', handleGetJobAddresses);
 router.get('/job-address-detail', handleGetJobAddressDetail);
+router.get('/job-zone-parts', handleGetJobZoneParts);
 router.post('/submit-count', express.json({ limit: '1mb' }), handleSubmitCount);
 router.post('/submit-free-zone', express.json({ limit: '1mb' }), handleSubmitFreeZone);
 router.post('/checkin', express.json({ limit: '1mb' }), handleLogCheckIn);
@@ -333,6 +395,7 @@ module.exports.handleSaveAssignments = handleSaveAssignments;
 module.exports.handleGetMyJobs = handleGetMyJobs;
 module.exports.handleGetJobAddresses = handleGetJobAddresses;
 module.exports.handleGetJobAddressDetail = handleGetJobAddressDetail;
+module.exports.handleGetJobZoneParts = handleGetJobZoneParts;
 module.exports.handleSubmitCount = handleSubmitCount;
 module.exports.handleSubmitFreeZone = handleSubmitFreeZone;
 module.exports.handleLogCheckIn = handleLogCheckIn;

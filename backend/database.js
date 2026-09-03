@@ -70,16 +70,19 @@ async function initDB() {
       created_at TEXT DEFAULT CURRENT_TIMESTAMP
     );
     -- Which address group (PIC + ShortAddr, from a batch's PIC/Addr-matched
-    -- data) is assigned to which physical device. One row per group per
-    -- batch; re-assigning a group just overwrites its device_id. A group
-    -- with no row here is simply unassigned — nothing to clean up.
+    -- data) is assigned to which physical device. A group CAN have more
+    -- than one row (one per device) — multiple devices can share the same
+    -- zone's remaining pool instead of the zone being split ahead of time;
+    -- whoever gets to a part first "claims" it (see handheld_stock_counts),
+    -- so no double-counting even with several devices working the same
+    -- zone at once. A group with no rows here is simply unassigned.
     CREATE TABLE IF NOT EXISTS handheld_assignments (
       batch_id TEXT NOT NULL,
       pic TEXT NOT NULL,
       short_addr TEXT NOT NULL,
       device_id TEXT NOT NULL,
       updated_at TEXT,
-      PRIMARY KEY (batch_id, pic, short_addr)
+      PRIMARY KEY (batch_id, pic, short_addr, device_id)
     );
     -- One row per (batch, pic, short_addr, addr, kbn) — a specific part
     -- counted at a specific address. Re-submitting the same key overwrites

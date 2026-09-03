@@ -18,17 +18,24 @@ const AssignHandheld = ({ currentBatchId, setUploadTab, subscribeToEvent }) => {
   const [selectedIds, setSelectedIds] = useState([]);
   const [targetDevice, setTargetDevice] = useState("");
   const [draggedGroupId, setDraggedGroupId] = useState(null);
+  const [draggedFromDevice, setDraggedFromDevice] = useState(null); // null = dragged from Unassigned
   const [dragOverTarget, setDragOverTarget] = useState(null);
   const [toast, setToast] = useState("");
   const [showSendConfirm, setShowSendConfirm] = useState(false);
   const [showSendSuccess, setShowSendSuccess] = useState(false);
   const [isSending, setIsSending] = useState(false);
+  const [isExporting, setIsExporting] = useState(false);
+  const [duplicateFromDevice, setDuplicateFromDevice] = useState(null); // device whose whole board we're duplicating
+  const [duplicateTarget, setDuplicateTarget] = useState("");
 
   // Device assignment is kept separate from the computed groups below
   // (keyed by group id "<PIC>::<ShortAddr>"), so switching the PIC filter
   // or a live-update refetch never wipes out assignments already made.
-  // Persisted on the backend (handheld_assignments table) — restored here
-  // on mount so a page refresh doesn't lose the drag-and-drop work.
+  // A group can now have MULTIPLE devices (shared zone — see the "+" button
+  // on each device's group row) so this maps groupId -> array of device
+  // names, not a single device. Persisted on the backend
+  // (handheld_assignments table, one row per group+device) — restored here
+  // on mount so a page refresh doesn't lose the work.
   const [assignments, setAssignments] = useState({});
   const loadAssignments = () => {
     if (!currentBatchId) return;
@@ -37,7 +44,11 @@ const AssignHandheld = ({ currentBatchId, setUploadTab, subscribeToEvent }) => {
       .then((result) => {
         const rows = result && result.data ? result.data : [];
         const next = {};
-        rows.forEach((r) => { next[`${r.pic}::${r.shortAddr}`] = r.deviceId; });
+        rows.forEach((r) => {
+          const key = `${r.pic}::${r.shortAddr}`;
+          if (!next[key]) next[key] = [];
+          next[key].push(r.deviceId);
+        });
         setAssignments(next);
       })
       .catch((err) => console.error("Failed to load device assignments", err));
@@ -131,28 +142,30 @@ const AssignHandheld = ({ currentBatchId, setUploadTab, subscribeToEvent }) => {
     return Array.from(byKey.values()).sort((a, b) => a.code.localeCompare(b.code));
   }, [finalHandheldData, selectedPic]);
 
-  // Merge in device assignments kept in `assignments` (see above).
+  // Merge in device assignments kept in `assignments` (see above). `devices`
+  // is an array now — a group can be shared by more than one device.
   const groups = useMemo(
-    () => baseGroups.map((g) => ({ ...g, device: assignments[g.id] || null })),
+    () => baseGroups.map((g) => ({ ...g, devices: assignments[g.id] || [] })),
     [baseGroups, assignments]
   );
 
   const totalAddresses = useMemo(() => groups.reduce((sum, g) => sum + g.count, 0), [groups]);
 
   const assignedAddresses = useMemo(
-    () => groups.filter((g) => g.device).reduce((sum, g) => sum + g.count, 0),
+    () => groups.filter((g) => g.devices.length > 0).reduce((sum, g) => sum + g.count, 0),
     [groups]
   );
 
+  const unassignedGroupsAll = useMemo(() => groups.filter((g) => g.devices.length === 0), [groups]);
+
   const unassignedGroups = useMemo(() => {
     const q = search.trim().toLowerCase();
-    return groups.filter((g) => !g.device).filter((g) => !q || g.code.toLowerCase().includes(q));
-  }, [groups, search]);
+    return unassignedGroupsAll.filter((g) => !q || g.code.toLowerCase().includes(q));
+  }, [unassignedGroupsAll, search]);
 
   const selectedGroups = groups.filter((g) => selectedIds.includes(g.id));
   const selectedAddressCount = selectedGroups.reduce((sum, g) => sum + g.count, 0);
   const assignedPercent = totalAddresses > 0 ? Math.round((assignedAddresses / totalAddresses) * 100) : 0;
-  const allAssigned = groups.length > 0 && groups.every((g) => g.device);
 
   const toggleGroup = (id) => {
     setSelectedIds((prev) => prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]);
@@ -179,7 +192,10 @@ const AssignHandheld = ({ currentBatchId, setUploadTab, subscribeToEvent }) => {
 
     setAssignments((prev) => {
       const next = { ...prev };
-      selectedIds.forEach((id) => { next[id] = target; });
+      selectedIds.forEach((id) => {
+        const existing = next[id] || [];
+        if (!existing.includes(target)) next[id] = [...existing, target];
+      });
       return next;
     });
     setSelectedIds([]);
@@ -187,26 +203,33 @@ const AssignHandheld = ({ currentBatchId, setUploadTab, subscribeToEvent }) => {
     showToast(`${count} group${count > 1 ? "s" : ""} assigned to ${target}`);
   };
 
-  const removeFromDevice = (id) => {
+  // Removes just ONE device from a shared group — the group stays assigned
+  // to whichever other devices still have it. Only returns to Unassigned
+  // once the last device is removed.
+  const removeFromDevice = (id, device) => {
     const group = groups.find((g) => g.id === id);
     setAssignments((prev) => {
       const next = { ...prev };
-      delete next[id];
+      const remaining = (next[id] || []).filter((d) => d !== device);
+      if (remaining.length > 0) next[id] = remaining;
+      else delete next[id];
       return next;
     });
     setSelectedIds((prev) => prev.filter((x) => x !== id));
 
-    if (group) showToast(`${group.code} returned to Unassigned`);
+    if (group) showToast(`${group.code} removed from ${device}`);
   };
 
-  const handleDragStart = (event, groupId) => {
+  const handleDragStart = (event, groupId, sourceDevice = null) => {
     setDraggedGroupId(groupId);
+    setDraggedFromDevice(sourceDevice); // null = dragged from the Unassigned list
     event.dataTransfer.effectAllowed = "move";
     event.dataTransfer.setData("text/plain", String(groupId));
   };
 
   const handleDragEnd = () => {
     setDraggedGroupId(null);
+    setDraggedFromDevice(null);
     setDragOverTarget(null);
   };
 
@@ -228,32 +251,71 @@ const AssignHandheld = ({ currentBatchId, setUploadTab, subscribeToEvent }) => {
     const transferredId = event.dataTransfer.getData("text/plain");
     const groupId = transferredId || draggedGroupId;
     if (!groupId) return;
+    const sourceDevice = draggedFromDevice; // which device's card it was dragged out of, if any
 
     const group = groups.find((g) => g.id === groupId);
-
-    if (!group || group.device === targetDeviceName) {
+    if (!group) {
       setDraggedGroupId(null);
+      setDraggedFromDevice(null);
       setDragOverTarget(null);
       return;
     }
 
-    setAssignments((prev) => {
-      const next = { ...prev };
-      if (targetDeviceName) next[groupId] = targetDeviceName;
-      else delete next[groupId];
-      return next;
-    });
+    if (targetDeviceName) {
+      // Dropped on a device. Dragged from Unassigned → plain assign.
+      // Dragged out of another device's card → MOVE (leaves that device),
+      // same as picking a group up and setting it down somewhere else.
+      setAssignments((prev) => {
+        let arr = prev[groupId] || [];
+        if (sourceDevice && sourceDevice !== targetDeviceName) arr = arr.filter((d) => d !== sourceDevice);
+        if (!arr.includes(targetDeviceName)) arr = [...arr, targetDeviceName];
+        return { ...prev, [groupId]: arr };
+      });
+      showToast(sourceDevice && sourceDevice !== targetDeviceName
+        ? `${group.code} moved to ${targetDeviceName}`
+        : `${group.code} assigned to ${targetDeviceName}`);
+    } else if (sourceDevice) {
+      // Dropped on Unassigned from a specific device's card — only leaves
+      // that one device (other devices sharing this group, if any, keep it).
+      setAssignments((prev) => {
+        const next = { ...prev };
+        const remaining = (next[groupId] || []).filter((d) => d !== sourceDevice);
+        if (remaining.length > 0) next[groupId] = remaining;
+        else delete next[groupId];
+        return next;
+      });
+      showToast(`${group.code} removed from ${sourceDevice}`);
+    }
     setSelectedIds((prev) => prev.filter((id) => id !== groupId));
 
-    if (targetDeviceName) showToast(`${group.code} moved to ${targetDeviceName}`);
-    else showToast(`${group.code} returned to Unassigned`);
-
     setDraggedGroupId(null);
+    setDraggedFromDevice(null);
     setDragOverTarget(null);
   };
 
+  // "Duplicate" on a device card — copies every group currently on
+  // `fromDevice` onto `toDevice` too, without removing them from
+  // `fromDevice`. The deliberate, explicit way to share a whole device's
+  // workload with another device (as opposed to dragging one group at a
+  // time — see handleDrop, which always moves rather than duplicates).
+  const duplicateDeviceTo = (fromDevice, toDevice) => {
+    if (!fromDevice || !toDevice || fromDevice === toDevice) return;
+    const sourceGroups = groups.filter((g) => g.devices.includes(fromDevice));
+    if (sourceGroups.length === 0) return;
+
+    setAssignments((prev) => {
+      const next = { ...prev };
+      sourceGroups.forEach((g) => {
+        const arr = next[g.id] || [];
+        if (!arr.includes(toDevice)) next[g.id] = [...arr, toDevice];
+      });
+      return next;
+    });
+    showToast(`${sourceGroups.length} group${sourceGroups.length > 1 ? "s" : ""} duplicated from ${fromDevice} to ${toDevice}`);
+  };
+
   const deviceStats = (device) => {
-    const list = groups.filter((g) => g.device === device);
+    const list = groups.filter((g) => g.devices.includes(device));
 
     return {
       groups: list,
@@ -269,8 +331,8 @@ const AssignHandheld = ({ currentBatchId, setUploadTab, subscribeToEvent }) => {
     const payload = {
       batchId: currentBatchId,
       assignments: groups
-        .filter((g) => g.device)
-        .map((g) => ({ pic: g.pic, shortAddr: g.code, deviceId: g.device })),
+        .filter((g) => g.devices.length > 0)
+        .flatMap((g) => g.devices.map((d) => ({ pic: g.pic, shortAddr: g.code, deviceId: d }))),
     };
 
     fetch(`${API_BASE}/api/handheld-assign/device-assignments`, {
@@ -288,6 +350,48 @@ const AssignHandheld = ({ currentBatchId, setUploadTab, subscribeToEvent }) => {
         setIsSending(false);
         showToast("ส่งไม่สำเร็จ ลองใหม่อีกครั้ง");
       });
+  };
+
+  // For whatever's still Unassigned — download it as an Excel file in the
+  // same format as the Handheld page's own export (same columns, since
+  // it's the same PIC/Addr-matched data, just filtered to the groups no
+  // device picked up). Reuses the backend's existing generic export-excel
+  // endpoint (see backend/handheld_part_list/assignAddrRoute.js).
+  const exportUnassignedToExcel = async () => {
+    if (!finalHandheldData || unassignedGroupsAll.length === 0) return;
+
+    const unassignedKeys = new Set(unassignedGroupsAll.map((g) => g.id));
+    const rows = finalHandheldData.filter((row) => {
+      const pic = row.PIC || "Unassigned";
+      const shortAddr = row.ShortAddr || "Unk";
+      return unassignedKeys.has(`${pic}::${shortAddr}`);
+    });
+    if (rows.length === 0) return;
+
+    setIsExporting(true);
+    try {
+      const response = await fetch(`${API_BASE}/api/handheld-assign/export-excel`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ data: rows, fileName: `Unassigned_${currentBatchId}` }),
+      });
+      if (!response.ok) throw new Error("Export failed");
+
+      const blob = await response.blob();
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `Unassigned_${currentBatchId}.xlsx`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      window.URL.revokeObjectURL(url);
+    } catch (err) {
+      console.error("Failed to export unassigned parts", err);
+      showToast("Export ไม่สำเร็จ ลองใหม่อีกครั้ง");
+    } finally {
+      setIsExporting(false);
+    }
   };
 
   if (dataStatus === "loading") {
@@ -370,7 +474,7 @@ const AssignHandheld = ({ currentBatchId, setUploadTab, subscribeToEvent }) => {
             <div className="w-10 h-10 rounded-xl bg-white flex items-center justify-center text-ink text-[12px] font-black shadow-sm">{assignedPercent}%</div>
             <div>
               <p className="text-[9px] font-extrabold tracking-wide text-muted">REMAINING</p>
-              <p className="text-[15px] font-bold text-ink leading-none mt-1">{groups.filter((g) => !g.device).length} groups</p>
+              <p className="text-[15px] font-bold text-ink leading-none mt-1">{groups.filter((g) => g.devices.length === 0).length} groups</p>
             </div>
           </div>
 
@@ -578,7 +682,20 @@ const AssignHandheld = ({ currentBatchId, setUploadTab, subscribeToEvent }) => {
                       </p>
                     </div>
 
-                    <div className="w-9 h-9 rounded-xl bg-accent/20 flex items-center justify-center">▤</div>
+                    <div className="flex items-center gap-2">
+                      {stats.groups.length > 0 && devices.length > 1 && (
+                        <button
+                          onClick={() => { setDuplicateFromDevice(device); setDuplicateTarget(""); }}
+                          title={`Duplicate all of ${device}'s groups to another device`}
+                          className="w-9 h-9 rounded-xl bg-[#F5F5EF] border border-ink/[0.07] flex items-center justify-center text-ink hover:bg-ink hover:text-accent transition-colors"
+                        >
+                          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                            <rect x="9" y="9" width="12" height="12" rx="2" />
+                            <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+                          </svg>
+                        </button>
+                      )}
+                    </div>
                   </div>
                 </div>
 
@@ -599,13 +716,14 @@ const AssignHandheld = ({ currentBatchId, setUploadTab, subscribeToEvent }) => {
                   ) : (
                     <div className="space-y-2">
                       {stats.groups.map((group) => {
-                        const isDragging = draggedGroupId === group.id;
+                        const otherDevices = group.devices.filter((d) => d !== device);
+                        const isDragging = draggedGroupId === group.id && draggedFromDevice === device;
 
                         return (
                           <div
                             key={group.id}
                             draggable
-                            onDragStart={(e) => handleDragStart(e, group.id)}
+                            onDragStart={(e) => handleDragStart(e, group.id, device)}
                             onDragEnd={handleDragEnd}
                             className={`group bg-[#FAFAF7] rounded-xl px-3 py-3 cursor-grab active:cursor-grabbing border border-transparent hover:border-ink/[0.07] transition-all ${
                               isDragging ? "opacity-40 scale-[0.98]" : ""
@@ -619,6 +737,11 @@ const AssignHandheld = ({ currentBatchId, setUploadTab, subscribeToEvent }) => {
                                 <p className="text-[9.5px] text-muted font-semibold mt-0.5">
                                   {group.count} addresses{selectedPic === "All" ? ` · ${group.pic}` : ""}
                                 </p>
+                                {otherDevices.length > 0 && (
+                                  <p className="text-[8.5px] text-ink/50 font-semibold mt-0.5 truncate">
+                                    Shared with {otherDevices.join(", ")}
+                                  </p>
+                                )}
                               </div>
 
                               <span className="bg-ink text-white min-w-[31px] h-[24px] px-2 rounded-full flex items-center justify-center text-[9px] font-extrabold">
@@ -628,9 +751,9 @@ const AssignHandheld = ({ currentBatchId, setUploadTab, subscribeToEvent }) => {
                               <button
                                 onClick={(e) => {
                                   e.stopPropagation();
-                                  removeFromDevice(group.id);
+                                  removeFromDevice(group.id, device);
                                 }}
-                                title="Return to Unassigned"
+                                title={`Remove from ${device}`}
                                 className="w-[21px] h-[21px] rounded-full flex items-center justify-center text-[#B8B5AC] hover:bg-ink hover:text-white text-[11px] font-bold transition opacity-50 group-hover:opacity-100"
                               >
                                 ×
@@ -658,24 +781,44 @@ const AssignHandheld = ({ currentBatchId, setUploadTab, subscribeToEvent }) => {
         </div>
       </div>
 
-      {/* SEND TO HANDHELD */}
-      {allAssigned && (
-        <div className="flex justify-center mt-7">
-          <button
-            onClick={() => setShowSendConfirm(true)}
-            disabled={isSending}
-            className="group bg-ink text-accent rounded-[16px] px-7 py-3.5 shadow-[0_12px_30px_rgba(20,20,15,0.18)] flex items-center gap-3 text-[11.5px] font-extrabold hover:-translate-y-0.5 hover:shadow-[0_16px_38px_rgba(20,20,15,0.24)] transition-all"
-          >
-            <span className="w-7 h-7 rounded-lg bg-accent/15 flex items-center justify-center">
-              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                <path d="M12 16V4" />
-                <path d="M7 9l5-5 5 5" />
-                <path d="M5 14v5h14v-5" />
-              </svg>
-            </span>
+      {/* SEND TO HANDHELD / EXPORT UNASSIGNED */}
+      {(assignedAddresses > 0 || unassignedGroupsAll.length > 0) && (
+        <div className="flex justify-center items-center gap-3 mt-7">
+          {assignedAddresses > 0 && (
+            <button
+              onClick={() => setShowSendConfirm(true)}
+              disabled={isSending}
+              className="group bg-ink text-accent rounded-[16px] px-7 py-3.5 shadow-[0_12px_30px_rgba(20,20,15,0.18)] flex items-center gap-3 text-[11.5px] font-extrabold hover:-translate-y-0.5 hover:shadow-[0_16px_38px_rgba(20,20,15,0.24)] transition-all"
+            >
+              <span className="w-7 h-7 rounded-lg bg-accent/15 flex items-center justify-center">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <path d="M12 16V4" />
+                  <path d="M7 9l5-5 5 5" />
+                  <path d="M5 14v5h14v-5" />
+                </svg>
+              </span>
 
-            {isSending ? "Sending..." : "Send to Handheld"}
-          </button>
+              {isSending ? "Sending..." : "Send to Handheld"}
+            </button>
+          )}
+
+          {unassignedGroupsAll.length > 0 && (
+            <button
+              onClick={exportUnassignedToExcel}
+              disabled={isExporting}
+              title="Download the still-unassigned parts as an Excel file"
+              className="bg-white border border-ink/10 text-ink rounded-[16px] px-6 py-3.5 shadow-[0_2px_12px_rgba(20,20,15,0.04)] flex items-center gap-3 text-[11.5px] font-extrabold hover:-translate-y-0.5 hover:border-ink/20 transition-all"
+            >
+              <span className="w-7 h-7 rounded-lg bg-ink/5 flex items-center justify-center">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <path d="M12 4v12" />
+                  <path d="M7 11l5 5 5-5" />
+                  <path d="M5 20h14" />
+                </svg>
+              </span>
+              {isExporting ? "Exporting..." : `Export Unassigned (${unassignedGroupsAll.length})`}
+            </button>
+          )}
         </div>
       )}
 
@@ -683,6 +826,57 @@ const AssignHandheld = ({ currentBatchId, setUploadTab, subscribeToEvent }) => {
       {draggedGroupId && (
         <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-[100] bg-ink text-white rounded-full px-4 py-2.5 shadow-xl pointer-events-none">
           <p className="text-[10px] font-bold">Drop on a device or Unassigned</p>
+        </div>
+      )}
+
+      {/* DUPLICATE DEVICE MODAL */}
+      {duplicateFromDevice && (
+        <div
+          className="fixed inset-0 z-[300] bg-ink/45 backdrop-blur-[3px] flex items-center justify-center p-4"
+          onClick={() => setDuplicateFromDevice(null)}
+        >
+          <div
+            className="w-full max-w-[360px] bg-white rounded-[26px] p-6 shadow-[0_30px_80px_rgba(20,20,15,0.25)]"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="w-12 h-12 rounded-[15px] bg-accent/25 flex items-center justify-center mb-4">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#14140F" strokeWidth="2">
+                <rect x="9" y="9" width="12" height="12" rx="2" />
+                <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+              </svg>
+            </div>
+            <h3 className="font-display text-[19px] font-bold text-ink">Duplicate {duplicateFromDevice}'s groups</h3>
+
+            <select
+              value={duplicateTarget}
+              onChange={(e) => setDuplicateTarget(e.target.value)}
+              className="w-full mt-4 bg-[#FAFAF7] border border-ink/[0.08] rounded-xl px-3 py-2.5 text-[11px] font-bold text-ink outline-none"
+            >
+              <option value="">Duplicate to...</option>
+              {devices.filter((d) => d !== duplicateFromDevice).map((d) => <option key={d} value={d}>{d}</option>)}
+            </select>
+
+            <div className="flex gap-2.5 mt-5">
+              <button
+                onClick={() => setDuplicateFromDevice(null)}
+                className="flex-1 py-3 rounded-xl bg-[#F5F5EF] border border-ink/[0.07] text-[11px] font-extrabold text-ink hover:bg-[#ECECE6] transition"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => {
+                  duplicateDeviceTo(duplicateFromDevice, duplicateTarget);
+                  setDuplicateFromDevice(null);
+                }}
+                disabled={!duplicateTarget}
+                className={`flex-1 py-3 rounded-xl text-[11px] font-extrabold transition ${
+                  duplicateTarget ? "bg-ink text-accent hover:-translate-y-[1px]" : "bg-[#E7E7E1] text-[#AAA79D] cursor-not-allowed"
+                }`}
+              >
+                OK
+              </button>
+            </div>
+          </div>
         </div>
       )}
 
