@@ -16,6 +16,7 @@ const handheldRoute = require('./handheld_part_list/handheldRoute');
 const templateRoute = require('./part_list/templateRoute');
 const assignAddrRoute = require('./handheld_part_list/assignAddrRoute');
 const deviceRoute = require('./handheld_part_list/deviceRoute');
+const deviceAssignmentRoute = require('./handheld_part_list/deviceAssignmentRoute');
 
 const app = express();
 app.use(cors());
@@ -36,6 +37,7 @@ app.use('/api/template', templateRoute);
 // Routes สำหรับ Handheld
 app.use('/api/handheld', handheldRoute);
 app.use('/api/handheld-assign', assignAddrRoute);
+app.use('/api/handheld-assign', deviceAssignmentRoute);
 app.use('/api/handheld-devices', deviceRoute);
 
 const httpServer = http.createServer(app);

@@ -69,6 +69,76 @@ async function initDB() {
       status TEXT NOT NULL DEFAULT 'active',
       created_at TEXT DEFAULT CURRENT_TIMESTAMP
     );
+    -- Which address group (PIC + ShortAddr, from a batch's PIC/Addr-matched
+    -- data) is assigned to which physical device. One row per group per
+    -- batch; re-assigning a group just overwrites its device_id. A group
+    -- with no row here is simply unassigned — nothing to clean up.
+    CREATE TABLE IF NOT EXISTS handheld_assignments (
+      batch_id TEXT NOT NULL,
+      pic TEXT NOT NULL,
+      short_addr TEXT NOT NULL,
+      device_id TEXT NOT NULL,
+      updated_at TEXT,
+      PRIMARY KEY (batch_id, pic, short_addr)
+    );
+    -- One row per (batch, pic, short_addr, addr, kbn) — a specific part
+    -- counted at a specific address. Re-submitting the same key overwrites
+    -- (operator correcting a mistake), it does not accumulate. Carries the
+    -- full part context (Supplier/Shop/Dock/S.plant/S.dock/Part no./Part
+    -- name) copied from the batch's matched data at submit time, so a
+    -- report never needs to re-join back to handheld_results later.
+    CREATE TABLE IF NOT EXISTS handheld_stock_counts (
+      batch_id TEXT NOT NULL,
+      pic TEXT NOT NULL,
+      short_addr TEXT NOT NULL,
+      addr TEXT NOT NULL,
+      kbn TEXT NOT NULL,
+      part_no TEXT,
+      part_name TEXT,
+      supplier TEXT,
+      shop TEXT,
+      dock TEXT,
+      s_plant TEXT,
+      s_dock TEXT,
+      qty INTEGER,
+      box TEXT,
+      pcs TEXT,
+      seq TEXT,
+      not_found INTEGER NOT NULL DEFAULT 0,
+      device_id TEXT,
+      employee_name TEXT,
+      employee_phone TEXT,
+      updated_at TEXT,
+      PRIMARY KEY (batch_id, pic, short_addr, addr, kbn)
+    );
+    -- Free Zone has no part list to match against (open scan), so it only
+    -- ever knows the barcode itself + a running box count. Re-submitting
+    -- the same barcode ADDS to box_count rather than replacing it — unlike
+    -- handheld_stock_counts above — since the device already sends its own
+    -- running total per send, and a second send from the same device later
+    -- represents genuinely new boxes counted since the first send.
+    CREATE TABLE IF NOT EXISTS handheld_free_zone_counts (
+      batch_id TEXT NOT NULL,
+      device_id TEXT NOT NULL,
+      barcode TEXT NOT NULL,
+      box_count INTEGER NOT NULL DEFAULT 0,
+      employee_name TEXT,
+      updated_at TEXT,
+      PRIMARY KEY (batch_id, device_id, barcode)
+    );
+    -- Audit log of every "เริ่มกะทำงาน" (check-in) on a handheld — who held
+    -- which device, when. Append-only (no primary key beyond id) since the
+    -- same person/device/batch combination can legitimately check in more
+    -- than once in a day (e.g. after a break). Not shown on the web yet;
+    -- this just makes sure the data exists to build that view from later.
+    CREATE TABLE IF NOT EXISTS handheld_checkins (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      batch_id TEXT,
+      device_id TEXT NOT NULL,
+      employee_id TEXT NOT NULL,
+      employee_phone TEXT NOT NULL,
+      checked_in_at TEXT NOT NULL
+    );
   `);
   // ปรับ schema ของตารางเดิมให้มี group_prefix โดยไม่กระทบข้อมูลเดิม
   const uploadBatchesColumns = await db.all(`PRAGMA table_info(upload_batches)`);

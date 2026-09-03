@@ -27,7 +27,21 @@ const AssignHandheld = ({ currentBatchId, setUploadTab, subscribeToEvent }) => {
   // Device assignment is kept separate from the computed groups below
   // (keyed by group id "<PIC>::<ShortAddr>"), so switching the PIC filter
   // or a live-update refetch never wipes out assignments already made.
+  // Persisted on the backend (handheld_assignments table) — restored here
+  // on mount so a page refresh doesn't lose the drag-and-drop work.
   const [assignments, setAssignments] = useState({});
+  const loadAssignments = () => {
+    if (!currentBatchId) return;
+    fetch(`${API_BASE}/api/handheld-assign/device-assignments?batchId=${currentBatchId}`)
+      .then((res) => (res.ok ? res.json() : null))
+      .then((result) => {
+        const rows = result && result.data ? result.data : [];
+        const next = {};
+        rows.forEach((r) => { next[`${r.pic}::${r.shortAddr}`] = r.deviceId; });
+        setAssignments(next);
+      })
+      .catch((err) => console.error("Failed to load device assignments", err));
+  };
 
   // Real handheld registry (managed on the "Handheld Devices" page) —
   // only active devices show up here as assignment targets, same as an
@@ -73,16 +87,17 @@ const AssignHandheld = ({ currentBatchId, setUploadTab, subscribeToEvent }) => {
   // Loads once per batch. A 404 / no data simply means step 2 (upload
   // "Part addr.xls" on the Handheld tab, matching Address + PIC) hasn't
   // been run yet for this batch — that's a normal state, not an error.
-  useEffect(() => { loadFinalData(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [currentBatchId]);
+  useEffect(() => { loadFinalData(); loadAssignments(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [currentBatchId]);
 
-  // Same-batch live updates (e.g. someone (re)uploads Part addr.xls or
-  // reassigns a PIC on the Handheld tab while this tab is open) — refetch
-  // so the groups here never go stale.
+  // Same-batch live updates (e.g. someone (re)uploads Part addr.xls, saves
+  // an assignment from another tab, or reassigns a PIC on the Handheld tab
+  // while this tab is open) — refetch so nothing here goes stale.
   useEffect(() => {
     if (!subscribeToEvent) return undefined;
     const unsubscribe = subscribeToEvent("handheld:updated", (payload) => {
       if (payload.batchId !== currentBatchId) return;
       loadFinalData();
+      loadAssignments();
     });
     return unsubscribe;
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -251,12 +266,28 @@ const AssignHandheld = ({ currentBatchId, setUploadTab, subscribeToEvent }) => {
     setShowSendConfirm(false);
     setIsSending(true);
 
-    // TODO (Step 2): send the real assignment (assignments + groups) to
-    // each device via a real API instead of this fake delay.
-    setTimeout(() => {
-      setIsSending(false);
-      setShowSendSuccess(true);
-    }, 900);
+    const payload = {
+      batchId: currentBatchId,
+      assignments: groups
+        .filter((g) => g.device)
+        .map((g) => ({ pic: g.pic, shortAddr: g.code, deviceId: g.device })),
+    };
+
+    fetch(`${API_BASE}/api/handheld-assign/device-assignments`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    })
+      .then((res) => (res.ok ? res.json() : Promise.reject(new Error("Save failed"))))
+      .then(() => {
+        setIsSending(false);
+        setShowSendSuccess(true);
+      })
+      .catch((err) => {
+        console.error("Failed to send assignment to handheld devices", err);
+        setIsSending(false);
+        showToast("ส่งไม่สำเร็จ ลองใหม่อีกครั้ง");
+      });
   };
 
   if (dataStatus === "loading") {
@@ -391,9 +422,21 @@ const AssignHandheld = ({ currentBatchId, setUploadTab, subscribeToEvent }) => {
               <div className="flex items-center justify-between mb-2">
                 <p className="text-[9px] font-extrabold text-muted tracking-wide">ASSIGN SELECTED TO</p>
 
-                {selectedIds.length > 0 && (
-                  <span className="text-[9px] font-extrabold text-ink">{selectedIds.length} selected</span>
-                )}
+                <div className="flex items-center gap-2">
+                  {selectedIds.length > 0 && (
+                    <span className="text-[9px] font-extrabold text-ink">{selectedIds.length} selected</span>
+                  )}
+                  <button
+                    onClick={loadDevices}
+                    title="Refresh device list"
+                    className="w-5 h-5 rounded-full flex items-center justify-center text-[#9A9788] hover:text-ink hover:bg-ink/5 transition-colors"
+                  >
+                    <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                      <path d="M21 12a9 9 0 1 1-2.64-6.36" />
+                      <path d="M21 3v6h-6" />
+                    </svg>
+                  </button>
+                </div>
               </div>
 
               <div className="flex gap-2">
