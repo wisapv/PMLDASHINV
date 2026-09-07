@@ -19,3 +19,5 @@ If you are developing a production application, we recommend using TypeScript wi
 git add .
 git commit -m "mumi1"
 git push
+
+npm config set strict-ssl true

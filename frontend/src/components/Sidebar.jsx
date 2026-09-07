@@ -1,5 +1,5 @@
 import React from 'react';
-import { Home, UploadCloud, LayoutGrid, ClipboardList, DownloadCloud, LogOut } from 'lucide-react';
+import { Home, UploadCloud, LayoutGrid, ClipboardList, DownloadCloud, Search, LogOut } from 'lucide-react';
 import Sparkle from './Sparkle';
 
 const Sidebar = ({ activeModule, setActiveModule }) => {
@@ -37,7 +37,18 @@ const Sidebar = ({ activeModule, setActiveModule }) => {
             <UploadCloud size={18} />
           </div>
 
-          {/* 3. Dashboard */}
+          {/* 3. Getsudo (ad-hoc counting) */}
+          <div
+            onClick={() => setActiveModule('getsudo')}
+            title="Getsudo"
+            className={`w-10 h-10 rounded-2xl cursor-pointer transition-all flex items-center justify-center ${
+              activeModule === 'getsudo' ? 'bg-ink text-accent shadow-[0_4px_10px_rgba(20,20,15,0.25)]' : 'text-muted hover:text-ink'
+            }`}
+          >
+            <Search size={18} />
+          </div>
+
+          {/* 4. Dashboard */}
           <div
             onClick={() => setActiveModule('dashboard')}
             title="Dashboard"

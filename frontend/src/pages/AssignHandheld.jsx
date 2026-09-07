@@ -6,6 +6,24 @@ import { API_BASE } from "../hooks/useActiveBatch";
 // instead of being hardcoded here.
 
 const AssignHandheld = ({ currentBatchId, setUploadTab, subscribeToEvent }) => {
+  // Which batch this page is managing — defaults to the app-wide active
+  // batch (currentBatchId prop), but can be switched to any other batch
+  // (e.g. a Getsudo session) without touching what's "active" elsewhere.
+  const [selectedBatchId, setSelectedBatchId] = useState(currentBatchId || "");
+  const [userPickedBatch, setUserPickedBatch] = useState(false);
+  const [batchList, setBatchList] = useState([]);
+
+  useEffect(() => {
+    if (!userPickedBatch && currentBatchId) setSelectedBatchId(currentBatchId);
+  }, [currentBatchId, userPickedBatch]);
+
+  useEffect(() => {
+    fetch(`${API_BASE}/api/batches/list`)
+      .then((res) => (res.ok ? res.json() : []))
+      .then((rows) => setBatchList(Array.isArray(rows) ? rows : []))
+      .catch((err) => console.error("Failed to load batch list", err));
+  }, []);
+
   // Real, per-part data for this batch — the same "Address + PIC matched"
   // result HandheldManager builds in step 2 (upload Part addr.xls), fetched
   // straight from the backend instead of a hardcoded mock. Each row has
@@ -38,8 +56,8 @@ const AssignHandheld = ({ currentBatchId, setUploadTab, subscribeToEvent }) => {
   // on mount so a page refresh doesn't lose the work.
   const [assignments, setAssignments] = useState({});
   const loadAssignments = () => {
-    if (!currentBatchId) return;
-    fetch(`${API_BASE}/api/handheld-assign/device-assignments?batchId=${currentBatchId}`)
+    if (!selectedBatchId) return;
+    fetch(`${API_BASE}/api/handheld-assign/device-assignments?batchId=${selectedBatchId}`)
       .then((res) => (res.ok ? res.json() : null))
       .then((result) => {
         const rows = result && result.data ? result.data : [];
@@ -79,9 +97,9 @@ const AssignHandheld = ({ currentBatchId, setUploadTab, subscribeToEvent }) => {
   );
 
   const loadFinalData = () => {
-    if (!currentBatchId) { setDataStatus("empty"); setFinalHandheldData(null); return; }
+    if (!selectedBatchId) { setDataStatus("empty"); setFinalHandheldData(null); return; }
     setDataStatus((prev) => (prev === "ready" ? prev : "loading"));
-    fetch(`${API_BASE}/api/handheld-assign/final-data?batchId=${currentBatchId}`)
+    fetch(`${API_BASE}/api/handheld-assign/final-data?batchId=${selectedBatchId}`)
       .then((res) => (res.ok ? res.json() : null))
       .then((result) => {
         const rows = result && result.data ? result.data : [];
@@ -98,7 +116,7 @@ const AssignHandheld = ({ currentBatchId, setUploadTab, subscribeToEvent }) => {
   // Loads once per batch. A 404 / no data simply means step 2 (upload
   // "Part addr.xls" on the Handheld tab, matching Address + PIC) hasn't
   // been run yet for this batch — that's a normal state, not an error.
-  useEffect(() => { loadFinalData(); loadAssignments(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [currentBatchId]);
+  useEffect(() => { loadFinalData(); loadAssignments(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [selectedBatchId]);
 
   // Same-batch live updates (e.g. someone (re)uploads Part addr.xls, saves
   // an assignment from another tab, or reassigns a PIC on the Handheld tab
@@ -106,13 +124,13 @@ const AssignHandheld = ({ currentBatchId, setUploadTab, subscribeToEvent }) => {
   useEffect(() => {
     if (!subscribeToEvent) return undefined;
     const unsubscribe = subscribeToEvent("handheld:updated", (payload) => {
-      if (payload.batchId !== currentBatchId) return;
+      if (payload.batchId !== selectedBatchId) return;
       loadFinalData();
       loadAssignments();
     });
     return unsubscribe;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [subscribeToEvent, currentBatchId]);
+  }, [subscribeToEvent, selectedBatchId]);
 
   // Every PIC present in the real data, for the filter dropdown.
   const picOptions = useMemo(() => {
@@ -329,7 +347,7 @@ const AssignHandheld = ({ currentBatchId, setUploadTab, subscribeToEvent }) => {
     setIsSending(true);
 
     const payload = {
-      batchId: currentBatchId,
+      batchId: selectedBatchId,
       assignments: groups
         .filter((g) => g.devices.length > 0)
         .flatMap((g) => g.devices.map((d) => ({ pic: g.pic, shortAddr: g.code, deviceId: d }))),
@@ -373,7 +391,7 @@ const AssignHandheld = ({ currentBatchId, setUploadTab, subscribeToEvent }) => {
       const response = await fetch(`${API_BASE}/api/handheld-assign/export-excel`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ data: rows, fileName: `Unassigned_${currentBatchId}` }),
+        body: JSON.stringify({ data: rows, fileName: `Unassigned_${selectedBatchId}` }),
       });
       if (!response.ok) throw new Error("Export failed");
 
@@ -381,7 +399,7 @@ const AssignHandheld = ({ currentBatchId, setUploadTab, subscribeToEvent }) => {
       const url = window.URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
-      a.download = `Unassigned_${currentBatchId}.xlsx`;
+      a.download = `Unassigned_${selectedBatchId}.xlsx`;
       document.body.appendChild(a);
       a.click();
       a.remove();
@@ -429,13 +447,32 @@ const AssignHandheld = ({ currentBatchId, setUploadTab, subscribeToEvent }) => {
     <div className="w-full pb-10 animate-in fade-in duration-500">
 
       {/* HEADER */}
-      <div className="flex items-center gap-3 mb-6">
+      <div className="flex items-start justify-between gap-3 mb-6">
         <div>
           <p className="text-xs text-muted font-semibold">Handheld Management</p>
           <h1 className="font-display text-[26px] font-bold text-ink leading-none mt-1">Assign Handheld</h1>
           <p className="text-[11.5px] text-muted font-semibold mt-2">
             Distribute address groups to handheld devices for counting
           </p>
+        </div>
+
+        <div className="flex flex-col items-end gap-1.5">
+          <p className="text-[9px] font-extrabold tracking-wide text-muted">MANAGING BATCH</p>
+          <select
+            value={selectedBatchId}
+            onChange={(e) => { setSelectedBatchId(e.target.value); setUserPickedBatch(true); }}
+            className="bg-white border border-ink/10 rounded-xl px-3 py-2 text-[11px] font-bold text-ink outline-none shadow-sm max-w-[240px]"
+          >
+            {selectedBatchId && !batchList.some((b) => b.batch_id === selectedBatchId) && (
+              <option value={selectedBatchId}>{selectedBatchId}</option>
+            )}
+            {batchList.map((b) => (
+              <option key={b.batch_id} value={b.batch_id}>
+                {b.batch_id.startsWith("GETSUDO") ? `[Getsudo] ${b.batch_id}` : b.batch_id}
+                {b.batch_id === currentBatchId ? " (current)" : ""}
+              </option>
+            ))}
+          </select>
         </div>
       </div>
 

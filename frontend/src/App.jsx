@@ -7,13 +7,17 @@ import ListCreate from './pages/ListCreate';
 import Home from './pages/Home';
 import TemplateManager from './pages/TemplateManager'
 import HandheldDevices from './pages/HandheldDevices'
+import NqcMasterManager from './pages/NqcMasterManager'
+import GetsudoPage from './pages/GetsudoPage'
+import AssignHandheld from './pages/AssignHandheld'
 import SendPartList from './pages/SendPartList'
 
 function App() {
   const [activeModule, setActiveModule] = useState('home');
   const [activeTab, setActiveTab] = useState('Overview'); // ใช้สำหรับหน้า Dashboard
   const [uploadTab, setUploadTab] = useState('TBOS');     // ใช้สำหรับหน้า Upload (เพิ่มใหม่)
-  const [templateTab, setTemplateTab] = useState('FORMAT'); // ใช้สำหรับหน้า Template Management (FORMAT / DEVICE)
+  const [templateTab, setTemplateTab] = useState('FORMAT'); // ใช้สำหรับหน้า Template Management (FORMAT / DEVICE / NQC MASTER)
+  const [getsudoTab, setGetsudoTab] = useState('Target List'); // ใช้สำหรับหน้า Getsudo (Target List / Assign)
 
   // Every module the user has opened at least once. A module is only
   // mounted into the DOM (and stays mounted, hidden via CSS, from then on —
@@ -50,6 +54,8 @@ function App() {
         setUploadTab={setUploadTab}
         templateTab={templateTab}
         setTemplateTab={setTemplateTab}
+        getsudoTab={getsudoTab}
+        setGetsudoTab={setGetsudoTab}
       />
 
       <div className="flex pt-[132px]">
@@ -84,6 +90,31 @@ function App() {
               </div>
               <div className={templateTab === 'DEVICE' ? '' : 'hidden'}>
                 <HandheldDevices />
+              </div>
+              <div className={templateTab === 'NQC MASTER' ? '' : 'hidden'}>
+                <NqcMasterManager />
+              </div>
+            </div>
+          )}
+
+          {/* Getsudo — its own module, separate from the Part Runout
+              (TBOS -> Handheld -> Assign) pipeline above, since it's a
+              genuinely different flow (pick any part number on demand vs.
+              the fixed Part Runout list). "Assign" here re-renders the
+              SAME AssignHandheld component the Part Runout flow uses —
+              not a copy — so every improvement (multi-device sharing,
+              Duplicate, partial send, export) applies to both automatically.
+              No currentBatchId/subscribeToEvent wiring needed here: this
+              entry point always starts with nothing selected and the admin
+              picks a Getsudo batch from AssignHandheld's own "MANAGING
+              BATCH" dropdown. */}
+          {visitedModules.has('getsudo') && (
+            <div className={activeModule === 'getsudo' ? '' : 'hidden'}>
+              <div className={getsudoTab === 'Target List' ? '' : 'hidden'}>
+                <GetsudoPage />
+              </div>
+              <div className={getsudoTab === 'Assign' ? '' : 'hidden'}>
+                <AssignHandheld currentBatchId={null} setUploadTab={() => {}} subscribeToEvent={undefined} />
               </div>
             </div>
           )}

@@ -142,6 +142,40 @@ async function initDB() {
       employee_phone TEXT NOT NULL,
       checked_in_at TEXT NOT NULL
     );
+    -- Whole-factory part master, uploaded periodically from a single
+    -- Excel export (Getsudo / ad-hoc counting — pick any part numbers on
+    -- demand instead of going through the TBOS/Address-matching pipeline).
+    -- key0 is the file's own composite key (supplier+dock+part combo), so
+    -- the same part number can legitimately have more than one row here
+    -- (different supplier/dock sources). Full replace on every upload —
+    -- see getsudo/getsudoRoute.js.
+    CREATE TABLE IF NOT EXISTS getsudo_master_parts (
+      key0 TEXT PRIMARY KEY,
+      source TEXT,
+      dock TEXT,
+      supplier TEXT,
+      s_plant TEXT,
+      s_dock TEXT,
+      pno TEXT,
+      part_no TEXT,
+      part_name TEXT,
+      kbn TEXT,
+      qty TEXT,
+      pc_addr TEXT,
+      addr01 TEXT,
+      updated_at TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_getsudo_part_no ON getsudo_master_parts(part_no);
+    -- Single-row metadata: which month the CURRENTLY loaded master data
+    -- represents (picked by the admin at upload time, not guessed from the
+    -- filename) — lets the UI show "Data for: September 2026" instead of
+    -- just an upload timestamp, since those can drift apart (e.g. October's
+    -- file uploaded a few days late, or uploaded early).
+    CREATE TABLE IF NOT EXISTS getsudo_master_meta (
+      id INTEGER PRIMARY KEY CHECK (id = 1),
+      data_month TEXT,
+      uploaded_at TEXT
+    );
   `);
   // ปรับ schema ของตารางเดิมให้มี group_prefix โดยไม่กระทบข้อมูลเดิม
   const uploadBatchesColumns = await db.all(`PRAGMA table_info(upload_batches)`);
