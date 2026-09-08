@@ -145,12 +145,16 @@ async function initDB() {
     -- Whole-factory part master, uploaded periodically from a single
     -- Excel export (Getsudo / ad-hoc counting — pick any part numbers on
     -- demand instead of going through the TBOS/Address-matching pipeline).
-    -- key0 is the file's own composite key (supplier+dock+part combo), so
-    -- the same part number can legitimately have more than one row here
-    -- (different supplier/dock sources). Full replace on every upload —
-    -- see getsudo/getsudoRoute.js.
+    -- key0 is the file's own composite key, but real exports have genuine
+    -- duplicate key0 rows — so it's NOT the primary key here (a plain
+    -- auto-increment id is). Every row from the file is kept exactly as
+    -- uploaded, duplicates and all; when matching a part number against
+    -- this table, only the first matching row is used (see
+    -- matchPartNumbersAgainstMaster in getsudoRoute.js) — the data itself
+    -- stays untouched either way. Full replace on every upload.
     CREATE TABLE IF NOT EXISTS getsudo_master_parts (
-      key0 TEXT PRIMARY KEY,
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      key0 TEXT,
       source TEXT,
       dock TEXT,
       supplier TEXT,

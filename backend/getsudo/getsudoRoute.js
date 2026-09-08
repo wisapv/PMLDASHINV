@@ -156,13 +156,84 @@ function generateGetsudoBatchId() {
   return `GETSUDO-NQC-${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`;
 }
 
-// POST /api/getsudo/create-batch — the ad-hoc counting entry point. Takes
-// whatever part numbers the admin picked, matches each against the master
-// (a part number can match more than one row — different supplier/dock
-// sources), and produces the exact same finalData shape the TBOS/Address-
-// matching pipeline produces — so AssignHandheld, the multi-device
+// Shared by both create-batch entry points (JSON array and Target List
+// file) — matches each requested part number against the master. The
+// master can have genuine duplicate rows for the same part number (see
+// database.js) — only the first one found is used per part number, not
+// every duplicate.
+async function matchPartNumbersAgainstMaster(db, partNumbers) {
+  const requested = [...new Set(partNumbers.map((p) => String(p).trim()).filter(Boolean))];
+  const foundRows = [];
+  const notFound = [];
+  for (const pn of requested) {
+    const match = await db.get(
+      'SELECT * FROM getsudo_master_parts WHERE part_no = ? OR pno = ? ORDER BY id ASC LIMIT 1',
+      [pn, pn]
+    );
+    if (!match) notFound.push(pn);
+    else foundRows.push(match);
+  }
+  return { requested, foundRows, notFound };
+}
+
+// Turns matched master rows into the exact finalData shape the TBOS/
+// Address-matching pipeline produces — so AssignHandheld, the multi-device
 // assignment logic, and the whole Android app work on a Getsudo batch with
-// zero changes on their end.
+// zero changes on their end. No "Shop" field in the NQC master (unlike
+// TBOS data) — Dock is the closest equivalent, used for both until/unless
+// a real Shop column shows up in a future export.
+function buildFinalDataFromMasterRows(foundRows) {
+  return foundRows.map((row) => {
+    const rawAddr = row.pc_addr && row.pc_addr.trim() ? row.pc_addr : row.addr01;
+    // Real prefixes vary in length (2-char "SD", 3-char "R.", "IP1", or a
+    // full word like "TUSHO") — there's no length that's always correct,
+    // so this just takes the first 3 characters of whatever's left after
+    // stripping whitespace (keeps dashes/dots — only spaces caused the
+    // actual bug, e.g. "SD - R03" silently becoming "SD ").
+    const cleanedAddr = cleanAddress(rawAddr);
+    const shortAddr = cleanedAddr.replace(/\s+/g, '').slice(0, 3).toUpperCase();
+    return {
+      PIC: 'Getsudo',
+      ShortAddr: shortAddr || 'UNK',
+      Addr: cleanedAddr,
+      Shop: row.dock || '',
+      Dock: row.dock || '',
+      Supplier: row.supplier || '',
+      'S.plant': row.s_plant || '',
+      'S.dock': row.s_dock || '',
+      kbn: row.kbn || '',
+      'Part no.': row.part_no || '',
+      'Part name': row.part_name || '',
+      "Q'ty": row.qty || '',
+    };
+  });
+}
+
+// Saves a new Getsudo batch (registers it + stores its finalData) and
+// returns the response payload — the last step shared by both create-batch
+// entry points.
+async function saveGetsudoBatch(db, foundRows, requestedCount, notFound, res) {
+  if (foundRows.length === 0) {
+    return res.status(404).json({ error: 'ไม่พบ Part Number ที่ระบุใน master เลยสักตัว', notFound });
+  }
+
+  const finalData = buildFinalDataFromMasterRows(foundRows);
+  const batchId = generateGetsudoBatchId();
+  await createBatchIfNotExists(db, batchId); // registers in upload_batches — shows up in /api/batches/list — without touching which batch is "active"
+  await saveHandheldResults(db, batchId, { finalData, holdData: [], remindData: [] });
+
+  res.json({
+    success: true,
+    batchId,
+    matchedCount: finalData.length,
+    requestedCount,
+    notFound,
+  });
+}
+
+// POST /api/getsudo/create-batch — the ad-hoc counting entry point (JSON
+// array of part numbers). Kept alongside create-batch-from-file below in
+// case something other than the Target List upload ever needs it.
 async function handleCreateBatch(req, res) {
   try {
     const { partNumbers } = req.body;
@@ -170,76 +241,82 @@ async function handleCreateBatch(req, res) {
       return res.status(400).json({ error: 'partNumbers must be a non-empty array' });
     }
 
-    const requested = [...new Set(partNumbers.map((p) => String(p).trim()).filter(Boolean))];
+    const db = await connectDB();
+    const { requested, foundRows, notFound } = await matchPartNumbersAgainstMaster(db, partNumbers);
     if (requested.length === 0) return res.status(400).json({ error: 'No valid part numbers provided' });
 
-    const db = await connectDB();
-
-    const foundRows = [];
-    const notFound = [];
-    for (const pn of requested) {
-      const matches = await db.all('SELECT * FROM getsudo_master_parts WHERE part_no = ? OR pno = ?', [pn, pn]);
-      if (matches.length === 0) notFound.push(pn);
-      else foundRows.push(...matches);
-    }
-
-    if (foundRows.length === 0) {
-      return res.status(404).json({ error: 'ไม่พบ Part Number ที่ระบุใน master เลยสักตัว', notFound });
-    }
-
-    // No "Shop" field in the NQC master (unlike TBOS data) — Dock is the
-    // closest equivalent, so it's used for both until/unless a real Shop
-    // column shows up in a future export.
-    const finalData = foundRows.map((row) => {
-      const rawAddr = row.pc_addr && row.pc_addr.trim() ? row.pc_addr : row.addr01;
-      // Real prefixes vary in length (2-char "SD", 3-char "R.", "IP1", or
-      // a full word like "TUSHO") — there's no length that's always
-      // correct, so this just takes the first 3 characters of whatever's
-      // left after stripping whitespace (keeps dashes/dots — only spaces
-      // caused the actual bug, e.g. "SD - R03" silently becoming "SD ").
-      const cleanedAddr = cleanAddress(rawAddr);
-      const shortAddr = cleanedAddr.replace(/\s+/g, '').slice(0, 3).toUpperCase();
-      return {
-        PIC: 'Getsudo',
-        ShortAddr: shortAddr || 'UNK',
-        Addr: cleanedAddr,
-        Shop: row.dock || '',
-        Dock: row.dock || '',
-        Supplier: row.supplier || '',
-        'S.plant': row.s_plant || '',
-        'S.dock': row.s_dock || '',
-        kbn: row.kbn || '',
-        'Part no.': row.part_no || '',
-        'Part name': row.part_name || '',
-        "Q'ty": row.qty || '',
-      };
-    });
-
-    const batchId = generateGetsudoBatchId();
-    await createBatchIfNotExists(db, batchId); // registers in upload_batches — shows up in /api/batches/list — without touching which batch is "active"
-    await saveHandheldResults(db, batchId, { finalData, holdData: [], remindData: [] });
-
-    res.json({
-      success: true,
-      batchId,
-      matchedCount: finalData.length,
-      requestedCount: requested.length,
-      notFound,
-    });
+    await saveGetsudoBatch(db, foundRows, requested.length, notFound, res);
   } catch (error) {
     console.error(error);
     res.status(500).json({ error: 'Failed to create Getsudo batch' });
   }
 }
 
+// Same fixed-format assumption as the master file's own header row — the
+// Target List template has exactly one column, "Target part list", so row
+// 0 is that header and every row after it (column A) is one part number.
+function extractPartNumbersFromTargetListFile(buffer) {
+  const workbook = xlsx.read(buffer, { type: 'buffer' });
+  const sheet = workbook.Sheets[workbook.SheetNames[0]];
+  const allRows = xlsx.utils.sheet_to_json(sheet, { header: 1, defval: '' });
+  return allRows.slice(1).map((row) => String(row[0] || '').trim()).filter(Boolean);
+}
+
+// POST /api/getsudo/create-batch-from-file — the actual Target List entry
+// point (see GetsudoPage.jsx): admin downloads the blank template, fills
+// in one part number per row, uploads it back here. No typing into the
+// web page itself.
+async function handleCreateBatchFromFile(req, res) {
+  try {
+    if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
+
+    let partNumbers;
+    try {
+      partNumbers = extractPartNumbersFromTargetListFile(req.file.buffer);
+    } catch (parseError) {
+      return res.status(400).json({ error: 'อ่านไฟล์ไม่สำเร็จ — เช็ครูปแบบไฟล์อีกครั้ง' });
+    }
+    if (partNumbers.length === 0) {
+      return res.status(400).json({ error: 'ไม่พบ Part Number ในไฟล์ (คอลัมน์ "Target part list")' });
+    }
+
+    const db = await connectDB();
+    const { requested, foundRows, notFound } = await matchPartNumbersAgainstMaster(db, partNumbers);
+
+    await saveGetsudoBatch(db, foundRows, requested.length, notFound, res);
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: 'Failed to create Getsudo batch from file' });
+  }
+}
+
+// GET /api/getsudo/target-list-template — the blank Excel template (one
+// column, "Target part list") for the admin to fill in and re-upload.
+// Generated on the fly rather than stored as a static file, so it can
+// never drift out of sync with what create-batch-from-file expects.
+function handleDownloadTemplate(req, res) {
+  const ws = xlsx.utils.aoa_to_sheet([['Target part list']]);
+  const wb = xlsx.utils.book_new();
+  xlsx.utils.book_append_sheet(wb, ws, 'Sheet1');
+  const buffer = xlsx.write(wb, { type: 'buffer', bookType: 'xlsx' });
+
+  res.setHeader('Content-Disposition', 'attachment; filename="Target_part_list_template.xlsx"');
+  res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+  res.send(buffer);
+}
+
 router.post('/upload-master', upload.single('file'), handleUploadMaster);
 router.get('/master-status', handleMasterStatus);
 router.get('/master-preview', handleMasterPreview);
 router.post('/create-batch', express.json({ limit: '2mb' }), handleCreateBatch);
+router.post('/create-batch-from-file', upload.single('file'), handleCreateBatchFromFile);
+router.get('/target-list-template', handleDownloadTemplate);
 
 module.exports = router;
 module.exports.handleUploadMaster = handleUploadMaster;
 module.exports.handleMasterStatus = handleMasterStatus;
 module.exports.handleMasterPreview = handleMasterPreview;
 module.exports.handleCreateBatch = handleCreateBatch;
+module.exports.handleCreateBatchFromFile = handleCreateBatchFromFile;
+module.exports.handleDownloadTemplate = handleDownloadTemplate;
 module.exports.parseMasterWorkbook = parseMasterWorkbook;
